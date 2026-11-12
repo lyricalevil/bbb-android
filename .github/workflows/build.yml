@@ -1,6 +1,5 @@
 name: Build APK
-on:
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
   build:
@@ -17,7 +16,7 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Download and extract game
+      - name: Download game
         run: |
           mkdir -p www
           wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
@@ -30,10 +29,11 @@ jobs:
               rmdir "$inner" || true
             fi
           fi
+          ls www | head
 
-      - name: Write ForceCanvas (Canvas renderer)
+      - name: Write ForceCanvas plugin
         run: |
-          cat > www/js/plugins/ForceCanvas.js << 'JSEOF'
+          cat > www/js/plugins/ForceCanvas.js <<'EOF'
           (() => {
               "use strict";
               if (typeof Graphics !== "undefined" && Graphics._createRenderer) {
@@ -50,11 +50,11 @@ jobs:
                   };
               }
           })();
-          JSEOF
+          EOF
 
       - name: Write VirtualControls plugin
         run: |
-          cat > www/js/plugins/VirtualControls.js << 'JSEOF'
+          cat > www/js/plugins/VirtualControls.js <<'EOF'
           (() => {
               "use strict";
               const CFG = { dpadSize: 150, dpadMargin: 30, btnSize: 68, btnMargin: 70, btnGap: 14, opacity: 0.45 };
@@ -110,7 +110,6 @@ jobs:
                   add("cancel", "X", vw - bm - bs * 2 - bg, vh - bm - bs, bs, cancelStyle);
                   add("shift", "⇧", vw - bm - bs * 3 - bg * 2, vh - bm - bs, bs, dashStyle);
                   add("menu", "≡", vw - bm - bs, vh - bm - bs * 2 - bg, bs, menuStyle);
-                  console.log("[VirtualControls] ready; margin=" + bm);
               }
               window.addEventListener("load", () => setTimeout(build, 200));
               let rt = null;
@@ -119,45 +118,30 @@ jobs:
                   rt = setTimeout(() => { if (root) { root.remove(); root = null; } build(); }, 300);
               });
           })();
-          JSEOF
+          EOF
 
-      - name: Patch plugins.js (regex, handles spaces + enable ForceCanvas/VC)
+      - name: Patch plugins.js
         run: |
-          python3 << 'PYEOF'
+          python3 - <<'PYEOF'
           import re
-
           with open('www/js/plugins.js', 'r', encoding='utf-8') as f:
               c = f.read()
-
-          # --- ForceCanvas: ensure present AND enabled ---
           if '"ForceCanvas"' not in c:
-              c = re.sub(r'(\$plugins\s*=\s*)\[',
-                         r'\1[{"name":"ForceCanvas","status":true,"description":"Forces Canvas renderer","parameters":{}},',
-                         c, count=1)
+              c = re.sub(r'(\$plugins\s*=\s*)\[', r'\1[{"name":"ForceCanvas","status":true,"description":"","parameters":{}},', c, count=1)
           else:
-              c = re.sub(r'("name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*)false',
-                         r'\1true', c)
-
-          # --- VirtualControls: same ---
+              c = re.sub(r'("name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*)false', r'\1true', c)
           if '"VirtualControls"' not in c:
-              idx = c.rfind('];')
-              if idx != -1:
-                  c = c[:idx] + ',{"name":"VirtualControls","status":true,"description":"On-screen controls","parameters":{}}' + c[idx:]
+              i = c.rfind('];')
+              if i != -1:
+                  c = c[:i] + ',{"name":"VirtualControls","status":true,"description":"","parameters":{}}' + c[i:]
           else:
-              c = re.sub(r'("name"\s*:\s*"VirtualControls"\s*,\s*"status"\s*:\s*)false',
-                         r'\1true', c)
-
-          # --- OrangeGreenworks: disable (handles spaces) ---
-          c = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true',
-                     r'\1false', c)
-
+              c = re.sub(r'("name"\s*:\s*"VirtualControls"\s*,\s*"status"\s*:\s*)false', r'\1true', c)
+          c = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true', r'\1false', c)
           with open('www/js/plugins.js', 'w', encoding='utf-8') as f:
               f.write(c)
-
-          print("=== VERIFY ===")
-          for name in ("ForceCanvas", "VirtualControls", "OrangeGreenworks"):
-              m = re.search(r'"name"\s*:\s*"' + name + r'"\s*,\s*"status"\s*:\s*(\w+)', c)
-              print(f"{name}: {m.group(1) if m else 'NOT FOUND'}")
+          for n in ["ForceCanvas","VirtualControls","OrangeGreenworks"]:
+              m = re.search(r'"name"\s*:\s*"' + n + r'"\s*,\s*"status"\s*:\s*(\w+)', c)
+              print(n + ": " + (m.group(1) if m else "NOT FOUND"))
           PYEOF
 
       - name: Install Capacitor
@@ -165,112 +149,78 @@ jobs:
           npm init -y
           npm install @capacitor/core @capacitor/cli @capacitor/android
 
-      - name: Init Capacitor
-        run: npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
-
-      - name: Add Android platform
-        run: npx cap add android
-
-      - name: Patch Android (all themes fullscreen + immersive + landscape)
+      - name: Init and add Android
         run: |
-          python3 << 'PYEOF'
+          npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
+          npx cap add android
+
+      - name: Patch Android
+        run: |
+          python3 - <<'PYEOF'
           import re, glob
-
-          # --- 1. Manifest: cleartext + landscape ---
-          mpath = 'android/app/src/main/AndroidManifest.xml'
-          with open(mpath, 'r', encoding='utf-8') as f:
-              m = f.read()
-
+          p = 'android/app/src/main/AndroidManifest.xml'
+          m = open(p, encoding='utf-8').read()
           if 'usesCleartextTraffic' not in m:
-              m = m.replace('<application',
-                  '<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"', 1)
+              m = m.replace('<application', '<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"', 1)
+          if 'screenOrientation' not in m:
+              m = m.replace('android:name=".MainActivity"', 'android:name=".MainActivity"\n            android:screenOrientation="sensorLandscape"', 1)
+          open(p, 'w', encoding='utf-8').write(m)
+          print('manifest done')
 
-          if 'android:screenOrientation' not in m:
-              m = m.replace('android:name=".MainActivity"',
-                  'android:name=".MainActivity"\n            android:screenOrientation="sensorLandscape"', 1)
+          p = 'android/app/src/main/res/values/styles.xml'
+          s = open(p, encoding='utf-8').read()
+          def fix(mt):
+              b = mt.group(0)
+              if 'windowFullscreen' in b:
+                  return b
+              return b.replace('</style>', '    <item name="android:windowFullscreen">true</item>\n    <item name="android:windowContentOverlay">@null</item>\n    <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>\n</style>')
+          s = re.sub(r'<style\b[^>]*>.*?</style>', fix, s, flags=re.DOTALL)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('styles done')
 
-          with open(mpath, 'w', encoding='utf-8') as f:
-              f.write(m)
-          print('manifest OK: cleartext=', 'usesCleartextTraffic' in m, 'landscape=', 'screenOrientation' in m)
-
-          # --- 2. styles.xml: add fullscreen to EVERY <style> block ---
-          spath = 'android/app/src/main/res/values/styles.xml'
-          with open(spath, 'r', encoding='utf-8') as f:
-              s = f.read()
-
-          def patch_style(match):
-              block = match.group(0)
-              if 'windowFullscreen' in block:
-                  return block
-              return block.replace('</style>',
-                  '    <item name="android:windowFullscreen">true</item>\n'
-                  '    <item name="android:windowContentOverlay">@null</item>\n'
-                  '    <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>\n'
-                  '</style>')
-
-          s2 = re.sub(r'<style\b[^>]*>.*?</style>', patch_style, s, flags=re.DOTALL)
-          with open(spath, 'w', encoding='utf-8') as f:
-              f.write(s2)
-          print('styles: fullscreen in', s2.count('windowFullscreen'), 'theme(s)')
-
-          # --- 3. MainActivity: full rewrite ---
           paths = glob.glob('android/app/src/main/java/**/MainActivity.java', recursive=True)
-          if not paths:
-              print('ERROR: MainActivity.java not found')
-          else:
+          if paths:
               p = paths[0]
-              with open(p, 'r', encoding='utf-8') as f:
-                  old = f.read()
+              old = open(p, encoding='utf-8').read()
               pm = re.search(r'package\s+([\w.]+);', old)
               pkg = pm.group(1) if pm else 'com.badbit.chblasters'
-
-              new_main = '''package %s;
-
-import android.os.Bundle;
-import android.view.View;
-import android.view.WindowManager;
-import com.getcapacitor.BridgeActivity;
-
-public class MainActivity extends BridgeActivity {
-    @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        getWindow().setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        hideSystemUI();
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        hideSystemUI();
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) hideSystemUI();
-    }
-
-    private void hideSystemUI() {
-        getWindow().getDecorView().setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_FULLSCREEN);
-    }
-}
-''' % pkg
-
-              with open(p, 'w', encoding='utf-8') as f:
-                  f.write(new_main)
-              print('MainActivity rewritten:', p)
+              java = 'package ' + pkg + ';\n'
+              java += 'import android.os.Bundle;\n'
+              java += 'import android.view.View;\n'
+              java += 'import android.view.WindowManager;\n'
+              java += 'import com.getcapacitor.BridgeActivity;\n\n'
+              java += 'public class MainActivity extends BridgeActivity {\n'
+              java += '    @Override\n'
+              java += '    public void onCreate(Bundle s) {\n'
+              java += '        super.onCreate(s);\n'
+              java += '        getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);\n'
+              java += '        hide();\n'
+              java += '    }\n'
+              java += '    @Override\n'
+              java += '    public void onResume() {\n'
+              java += '        super.onResume();\n'
+              java += '        hide();\n'
+              java += '    }\n'
+              java += '    @Override\n'
+              java += '    public void onWindowFocusChanged(boolean has) {\n'
+              java += '        super.onWindowFocusChanged(has);\n'
+              java += '        if (has) hide();\n'
+              java += '    }\n'
+              java += '    private void hide() {\n'
+              java += '        getWindow().getDecorView().setSystemUiVisibility(\n'
+              java += '            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY\n'
+              java += '            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE\n'
+              java += '            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION\n'
+              java += '            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN\n'
+              java += '            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION\n'
+              java += '            | View.SYSTEM_UI_FLAG_FULLSCREEN);\n'
+              java += '    }\n'
+              java += '}\n'
+              open(p, 'w', encoding='utf-8').write(java)
+              print('MainActivity done')
           PYEOF
 
-      - name: Build APK
+      - name: Build
         run: |
           npx cap sync android
           cd android
@@ -278,7 +228,7 @@ public class MainActivity extends BridgeActivity {
           chmod +x gradlew
           ./gradlew assembleDebug --stacktrace
 
-      - name: Upload APK
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: bbb-apk
