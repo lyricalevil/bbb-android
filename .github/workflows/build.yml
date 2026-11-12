@@ -21,16 +21,19 @@ jobs:
           mkdir -p www
           wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
           unzip -q game.zip -d www
-          echo "=== Search Graphics.initialize ==="
-          grep -n "Graphics.initialize" www/js/rmmz_core.js 2>&1 | head -5 || echo "NONE"
-          echo "=== Search PIXI.settings / CanvasRenderer ==="
-          grep -n "CanvasRenderer\|PIXI.settings" www/js/rmmz_core.js 2>&1 | head -10 || echo "NONE"
-          echo "=== main.js ==="
-          head -60 www/js/main.js
-          echo "=== Graphics._createRenderer? ==="
-          grep -n "_createRenderer" www/js/*.js 2>&1 | head -5 || echo "NONE"
+          echo "=== MZ version ==="
+          grep -m1 "Utils.RPGMAKER_VERSION" www/js/rmmz_core.js 2>&1 || true
+          grep -m1 "RPGMAKER_NAME" www/js/rmmz_core.js 2>&1 || true
+          echo "=== Graphics.initialize full block ==="
+          sed -n '483,520p' www/js/rmmz_core.js 2>&1 | head -40
+          echo "=== Search Bitmap._createBaseTexture ==="
+          grep -n "_createBaseTexture\|_createTexture" www/js/rmmz_core.js 2>&1 | head -10 || echo "NONE"
+          echo "=== Search PIXI in rmmz_core ==="
+          grep -n "PIXI\." www/js/rmmz_core.js 2>&1 | head -15 || echo "NONE"
+          echo "=== pixi.js version ==="
+          grep -m3 "VERSION\|version" www/js/libs/pixi.js 2>&1 | head -5 || true
 
-      - name: Write ForceCanvas v5 (NEAREST only, no renderer recreate)
+      - name: Write ForceCanvas v6 (safe settings + Bitmap patch, no init override)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
@@ -39,69 +42,85 @@ jobs:
               function log(m) { console.log("[ForceCanvas] " + m); }
               function err(m) { console.error("[ForceCanvas] " + m); }
 
-              log("v5 loaded - NEAREST only, no renderer recreate");
+              log("v6 loaded - safe settings + Bitmap patch only");
 
-              // Apply NEAREST individually (safer than one block)
+              // 1) PIXI settings — apply if available
               try {
                   if (PIXI && PIXI.settings && PIXI.SCALE_MODES) {
                       PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
-                      log("SCALE_MODE = NEAREST");
+                      log("settings.SCALE_MODE = NEAREST");
                   }
-              } catch (e) { err("SCALE_MODE: " + e); }
+              } catch (e) { err("settings.SCALE_MODE: " + e); }
 
               try {
                   if (PIXI && PIXI.settings && PIXI.MIPMAP_MODES) {
                       PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF;
-                      log("MIPMAP_TEXTURES = OFF");
+                      log("settings.MIPMAP_TEXTURES = OFF");
                   }
-              } catch (e) { err("MIPMAP: " + e); }
+              } catch (e) { err("settings.MIPMAP: " + e); }
 
               try {
                   if (PIXI && PIXI.settings) {
                       PIXI.settings.ROUND_PIXELS = true;
-                      log("ROUND_PIXELS = true");
+                      log("settings.ROUND_PIXELS = true");
                   }
-              } catch (e) { err("ROUND_PIXELS: " + e); }
+              } catch (e) { err("settings.ROUND_PIXELS: " + e); }
 
+              // 2) BaseTexture default options
               try {
                   if (PIXI && PIXI.BaseTexture && PIXI.BaseTexture.defaultOptions) {
                       PIXI.BaseTexture.defaultOptions.scaleMode = PIXI.SCALE_MODES.NEAREST;
                       PIXI.BaseTexture.defaultOptions.mipmap = PIXI.MIPMAP_MODES.OFF;
                       log("BaseTexture.defaultOptions patched");
                   }
-              } catch (e) { err("BaseTexture: " + e); }
+              } catch (e) { err("BaseTexture.defaultOptions: " + e); }
 
-              // After Graphics.initialize fires, retrofit already-created textures
+              // 3) Patch Bitmap._createBaseTexture (новые текстуры)
               try {
-                  if (typeof Graphics !== "undefined" && typeof Graphics.initialize === "function") {
-                      const orig = Graphics.initialize.bind(Graphics);
-                      Graphics.initialize = function (w, h, type) {
-                          log("initialize() " + w + "x" + h + " type=" + type);
-                          orig(w, h, type);
-                          // Re-apply settings AFTER init (in case other plugins changed them)
+                  if (typeof Bitmap !== "undefined" && Bitmap.prototype._createBaseTexture) {
+                      const origBase = Bitmap.prototype._createBaseTexture;
+                      Bitmap.prototype._createBaseTexture = function (bitmap) {
+                          const bt = origBase.call(this, bitmap);
                           try {
-                              PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
-                              PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF;
+                              bt.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                              bt.mipmap = PIXI.MIPMAP_MODES.OFF;
+                              bt.update();
                           } catch (e) {}
-                          // Retrofit existing textures in cache
-                          try {
-                              let n = 0;
-                              for (const k in PIXI.utils.TextureCache) {
-                                  const tex = PIXI.utils.TextureCache[k];
-                                  if (tex && tex.baseTexture) {
-                                      tex.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
-                                      tex.baseTexture.update();
-                                      n++;
-                                  }
-                              }
-                              log("Retrofitted " + n + " textures to NEAREST");
-                          } catch (e) { err("retrofit: " + e); }
+                          return bt;
                       };
-                      log("Graphics.initialize wrapped (post-init retrofit)");
+                      log("Bitmap._createBaseTexture patched");
+                  } else {
+                      log("Bitmap._createBaseTexture not found, trying alternative");
                   }
-              } catch (e) { err("initialize patch: " + e); }
+              } catch (e) { err("Bitmap patch: " + e); }
 
-              // Indicator
+              // 4) Retrofit already-loaded textures periodically (безопасно)
+              let retrofitCount = 0;
+              function retrofit() {
+                  try {
+                      if (!PIXI || !PIXI.utils || !PIXI.utils.TextureCache) return;
+                      let n = 0;
+                      const cache = PIXI.utils.TextureCache;
+                      for (const k in cache) {
+                          const tex = cache[k];
+                          if (tex && tex.baseTexture && tex.baseTexture.scaleMode !== PIXI.SCALE_MODES.NEAREST) {
+                              tex.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                              tex.baseTexture.update();
+                              n++;
+                          }
+                      }
+                      if (n > 0) {
+                          retrofitCount += n;
+                          log("retrofitted " + n + " textures (total " + retrofitCount + ")");
+                      }
+                  } catch (e) {}
+              }
+              setTimeout(retrofit, 500);
+              setTimeout(retrofit, 1500);
+              setTimeout(retrofit, 3000);
+              setTimeout(retrofit, 6000);
+
+              // 5) Indicator
               window.addEventListener("load", () => {
                   setTimeout(() => {
                       try {
@@ -239,7 +258,6 @@ jobs:
                       qol_new = qol.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
                       if qol != qol_new:
                           params['QoL:struct'] = qol_new
-                          print("Pixelate disabled")
 
           plugins.append({"name": "VirtualControls", "status": True, "description": "", "parameters": {}})
           plugins.append({"name": "ForceCanvas", "status": True, "description": "", "parameters": {}})
@@ -251,11 +269,6 @@ jobs:
           m2 = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c_new)
           verify = json.loads(m2.group(2))
           print("Verify:", len(verify), "plugins, last two:", [pl['name'] for pl in verify[-2:]])
-          for n in ('ForceCanvas', 'VirtualControls', 'OrangeGreenworks'):
-              for pl in verify:
-                  if pl.get('name') == n:
-                      print(n + ":", pl.get('status'))
-                      break
           PYEOF
 
       - name: Install Capacitor
