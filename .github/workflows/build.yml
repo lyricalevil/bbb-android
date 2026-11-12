@@ -24,45 +24,60 @@ jobs:
           ls -la www/ | head -20
           echo "=== js/ ==="
           ls -la www/js/ 2>&1 | head -30
+          echo "=== _createRenderer in rmmz_core (for diagnostics) ==="
+          grep -n -A2 '_createRenderer\s*=' www/js/rmmz_core.js 2>&1 | head -20 || true
+          echo "=== autoDetect in rmmz_core ==="
+          grep -n 'autoDetect' www/js/rmmz_core.js 2>&1 | head -5 || true
 
-      - name: Patch rmmz_core.js to force Canvas
+      - name: Write ForceCanvas (patch PIXI + Graphics, works in any MZ version)
         run: |
-          python3 - <<'PYEOF'
-          import glob
-          candidates = glob.glob('www/**/rmmz_core.js', recursive=True)
-          if not candidates:
-              print('ERROR: rmmz_core.js not found')
-              raise SystemExit(1)
-          p = candidates[0]
-          print('Using:', p)
-          c = open(p, encoding='utf-8').read()
-          orig = c
-          c = c.replace("this._rendererType = type || 'auto';", "this._rendererType = 'canvas';")
-          c = c.replace('this._rendererType = type || "auto";', 'this._rendererType = "canvas";')
-          c = c.replace("PIXI.autoDetectRenderer(width, height, option)", "new PIXI.CanvasRenderer(width, height, option)")
-          c = c.replace("PIXI.autoDetectRenderer(width, height, options)", "new PIXI.CanvasRenderer(width, height, options)")
-          open(p, 'w', encoding='utf-8').write(c)
-          print('rendererType=canvas:', ("this._rendererType = 'canvas';" in c) or ('this._rendererType = "canvas";' in c))
-          print('autoDetectRenderer gone:', 'PIXI.autoDetectRenderer' not in c)
-          print('changed:', c != orig)
-          PYEOF
+          PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
+          cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
+          (() => {
+              "use strict";
 
-      - name: Disable ForceCanvas plugin + Pixelate
-        run: |
-          python3 - <<'PYEOF'
-          import re, glob
-          candidates = glob.glob('www/**/plugins.js', recursive=True)
-          p = candidates[0]
-          c = open(p, encoding='utf-8').read()
-          c = re.sub(r'("name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*)true', r'\1false', c)
-          c = c.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
-          open(p, 'w', encoding='utf-8').write(c)
-          m = re.search(r'"name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*(\w+)', c)
-          print('ForceCanvas:', m.group(1) if m else 'NOT FOUND')
-          print('PixelateImageRendering disabled:', '"PixelateImageRendering:eval":"true"' not in c)
-          PYEOF
+              // 1) Override PIXI.autoDetectRenderer globally
+              try {
+                  if (typeof PIXI !== "undefined" && PIXI.autoDetectRenderer) {
+                      const orig = PIXI.autoDetectRenderer;
+                      PIXI.autoDetectRenderer = function (w, h, o) {
+                          try {
+                              console.log("[ForceCanvas] autoDetectRenderer -> CanvasRenderer");
+                              return new PIXI.CanvasRenderer(w, h, o);
+                          } catch (e) {
+                              console.error("[ForceCanvas] CanvasRenderer in autoDetect failed:", e);
+                              return orig.call(PIXI, w, h, o);
+                          }
+                      };
+                  }
+              } catch (e) { console.warn("[ForceCanvas] autoDetect patch failed:", e); }
 
-      - name: Write VirtualControls plugin
+              // 2) Override Graphics._createRenderer — fires after all plugins
+              try {
+                  if (typeof Graphics !== "undefined") {
+                      const origCreate = Graphics._createRenderer;
+                      Graphics._createRenderer = function () {
+                          PIXI.dontSayHello = true;
+                          const w = this._width;
+                          const h = this._height;
+                          try {
+                              this._renderer = new PIXI.CanvasRenderer(w, h, { view: this._canvas });
+                              console.log("[ForceCanvas] _createRenderer -> CanvasRenderer, type =", this._renderer.type);
+                          } catch (e) {
+                              console.error("[ForceCanvas] _createRenderer Canvas failed:", e);
+                              if (origCreate) origCreate.call(this);
+                          }
+                      };
+                      if (Graphics._rendererType !== undefined) {
+                          Graphics._rendererType = "canvas";
+                      }
+                      console.log("[ForceCanvas] plugin loaded, overrides installed");
+                  }
+              } catch (e) { console.error("[ForceCanvas] Graphics patch failed:", e); }
+          })();
+          EOF
+
+      - name: Write VirtualControls plugin (with Capacitor StatusBar hide)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/VirtualControls.js" <<'EOF'
@@ -70,6 +85,21 @@ jobs:
               "use strict";
               const CFG = { dpadSize: 150, dpadMargin: 30, btnSize: 68, btnMargin: 40, btnGap: 14, opacity: 0.45 };
               let root = null;
+
+              function tryHideStatusBar() {
+                  try {
+                      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar) {
+                          window.Capacitor.Plugins.StatusBar.setOverlaysWebView({ overlay: true }).catch(()=>{});
+                          window.Capacitor.Plugins.StatusBar.hide().catch(()=>{});
+                          console.log("[VirtualControls] StatusBar.hide called");
+                      }
+                  } catch (e) { console.warn("[VirtualControls] StatusBar hide failed:", e); }
+              }
+              tryHideStatusBar();
+              setTimeout(tryHideStatusBar, 500);
+              setTimeout(tryHideStatusBar, 2000);
+              setTimeout(tryHideStatusBar, 5000);
+
               function setKey(key, on) {
                   if (key === "menu") {
                       if (on && SceneManager._scene instanceof Scene_Map && !$gameMessage.isBusy()) {
@@ -131,36 +161,51 @@ jobs:
           })();
           EOF
 
-      - name: Patch plugins.js for VirtualControls + Greenworks
+      - name: Patch plugins.js (ForceCanvas LAST, VirtualControls on, Greenworks off, Pixelate off)
         run: |
           python3 - <<'PYEOF'
           import re, glob
           p = glob.glob('www/**/plugins.js', recursive=True)[0]
           c = open(p, encoding='utf-8').read()
-          if '"VirtualControls"' not in c:
-              i = c.rfind('];')
-              if i != -1:
-                  c = c[:i] + ',{"name":"VirtualControls","status":true,"description":"","parameters":{}}' + c[i:]
-          else:
-              c = re.sub(r'("name"\s*:\s*"VirtualControls"\s*,\s*"status"\s*:\s*)false', r'\1true', c)
+
+          # Remove ALL existing ForceCanvas entries
+          c = re.sub(r',?\s*\{"name"\s*:\s*"ForceCanvas"[^}]*\}', '', c)
+          # Remove ALL existing VirtualControls entries
+          c = re.sub(r',?\s*\{"name"\s*:\s*"VirtualControls"[^}]*\}', '', c)
+
+          # Append both at end (ForceCanvas LAST so its overrides win over VisuStella)
+          i = c.rfind('];')
+          if i != -1:
+              c = c[:i] + ',{"name":"VirtualControls","status":true,"description":"","parameters":{}}' \
+                          + ',{"name":"ForceCanvas","status":true,"description":"","parameters":{}}' + c[i:]
+
+          # Disable Steam plugin
           c = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true', r'\1false', c)
+          # Disable pixelate
+          c = c.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
+
           open(p, 'w', encoding='utf-8').write(c)
-          for n in ("VirtualControls", "OrangeGreenworks"):
+
+          # Verify
+          for n in ("ForceCanvas", "VirtualControls", "OrangeGreenworks"):
               m = re.search(r'"name"\s*:\s*"' + n + r'"\s*,\s*"status"\s*:\s*(\w+)', c)
               print(n + ": " + (m.group(1) if m else "NOT FOUND"))
+          # Last 400 chars to confirm placement
+          print("--- plugins.js tail ---")
+          print(c[-400:])
           PYEOF
 
-      - name: Install Capacitor
+      - name: Install Capacitor + StatusBar
         run: |
           npm init -y
-          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/status-bar
 
       - name: Init and add Android
         run: |
           npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
           npx cap add android
 
-      - name: Patch Android (safe, максимально совместимо)
+      - name: Patch Android (landscape + WindowInsetsController + edge-to-edge)
         run: |
           python3 - <<'PYEOF'
           import re, glob
@@ -193,10 +238,13 @@ jobs:
               pkg = pm.group(1) if pm else 'com.badbit.chblasters'
               java = (
                 'package ' + pkg + ';\n\n'
+                'import android.os.Build;\n'
                 'import android.os.Bundle;\n'
                 'import android.os.Handler;\n'
                 'import android.os.Looper;\n'
                 'import android.view.View;\n'
+                'import android.view.WindowInsets;\n'
+                'import android.view.WindowInsetsController;\n'
                 'import android.view.WindowManager;\n'
                 'import com.getcapacitor.BridgeActivity;\n\n'
                 'public class MainActivity extends BridgeActivity {\n'
@@ -207,6 +255,9 @@ jobs:
                 '    @Override\n'
                 '    public void onCreate(Bundle s) {\n'
                 '        super.onCreate(s);\n'
+                '        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {\n'
+                '            getWindow().setDecorFitsSystemWindows(false);\n'
+                '        }\n'
                 '        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);\n'
                 '        goFullscreen();\n'
                 '        handler.postDelayed(hideRunnable, 50);\n'
@@ -226,6 +277,13 @@ jobs:
                 '        handler.removeCallbacks(hideRunnable);\n'
                 '    }\n\n'
                 '    private void goFullscreen() {\n'
+                '        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {\n'
+                '            WindowInsetsController c = getWindow().getInsetsController();\n'
+                '            if (c != null) {\n'
+                '                c.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());\n'
+                '                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);\n'
+                '            }\n'
+                '        }\n'
                 '        getWindow().getDecorView().setSystemUiVisibility(\n'
                 '            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY\n'
                 '            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE\n'
@@ -237,7 +295,7 @@ jobs:
                 '}\n'
               )
               open(p, 'w', encoding='utf-8').write(java)
-              print('MainActivity rewritten (safe, onDestroy public)')
+              print('MainActivity rewritten (WindowInsetsController + legacy flags, onDestroy public)')
           PYEOF
 
       - name: Build
