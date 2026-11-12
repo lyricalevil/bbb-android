@@ -16,114 +16,107 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Download game
+      - name: Download game + diagnostics
         run: |
           mkdir -p www
           wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
           unzip -q game.zip -d www
-          echo "=== ALL js files ==="
-          find www -name "*.js" | head -50
-          echo "=== Search createRenderer anywhere ==="
-          grep -rn "createRenderer\|_rendererType\|autoDetectRenderer" www/js/ 2>&1 | head -20 || echo "NONE FOUND"
-          echo "=== Search PIXI.Renderer anywhere ==="
-          grep -rn "new PIXI.Renderer\|new PIXI.CanvasRenderer\|PIXI.autoDetectRenderer" www/js/ 2>&1 | head -20 || echo "NONE"
-          echo "=== main.js ==="
-          head -80 www/js/main.js
-          echo "=== js/libs/ ==="
-          ls -la www/js/libs/ 2>&1 || true
           echo "=== Search Graphics.initialize ==="
-          grep -rn "Graphics.initialize" www/js/ 2>&1 | head -10 || echo "NONE"
+          grep -n "Graphics.initialize" www/js/rmmz_core.js 2>&1 | head -5 || echo "NONE"
+          echo "=== Search PIXI.settings / CanvasRenderer ==="
+          grep -n "CanvasRenderer\|PIXI.settings" www/js/rmmz_core.js 2>&1 | head -10 || echo "NONE"
+          echo "=== main.js ==="
+          head -60 www/js/main.js
+          echo "=== Graphics._createRenderer? ==="
+          grep -n "_createRenderer" www/js/*.js 2>&1 | head -5 || echo "NONE"
 
-      - name: Write ForceCanvas v4 (recreate after init + NEAREST filter)
+      - name: Write ForceCanvas v5 (NEAREST only, no renderer recreate)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
           (() => {
               "use strict";
-
               function log(m) { console.log("[ForceCanvas] " + m); }
               function err(m) { console.error("[ForceCanvas] " + m); }
 
-              log("v4 loaded");
+              log("v5 loaded - NEAREST only, no renderer recreate");
+
+              // Apply NEAREST individually (safer than one block)
+              try {
+                  if (PIXI && PIXI.settings && PIXI.SCALE_MODES) {
+                      PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
+                      log("SCALE_MODE = NEAREST");
+                  }
+              } catch (e) { err("SCALE_MODE: " + e); }
 
               try {
-                  PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
-                  PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF;
-                  PIXI.settings.WRAP_MODE = PIXI.WRAP_MODES.CLAMP;
-                  PIXI.settings.ROUND_PIXELS = true;
-                  PIXI.settings.ANISOTROPIC_FILTERING = 1;
-                  log("PIXI settings patched (NEAREST + MIPMAP OFF)");
-              } catch (e) { err("PIXI settings: " + e); }
+                  if (PIXI && PIXI.settings && PIXI.MIPMAP_MODES) {
+                      PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF;
+                      log("MIPMAP_TEXTURES = OFF");
+                  }
+              } catch (e) { err("MIPMAP: " + e); }
 
-              if (typeof Graphics !== "undefined" && typeof Graphics.initialize === "function") {
-                  const origInit = Graphics.initialize.bind(Graphics);
-                  Graphics.initialize = function (w, h, type) {
-                      log("initialize() called, w=" + w + " h=" + h + " type=" + type);
-                      origInit(w, h, type);
-                      try {
-                          if (this._renderer && this._renderer.type !== 1) {
-                              log("WebGL detected (type=" + this._renderer.type + "), recreating as Canvas");
-                              try { this._renderer.destroy(true); } catch (e) { log("destroy fail: " + e); }
-                              const oldCanvas = this._canvas;
-                              const newCanvas = document.createElement("canvas");
-                              newCanvas.width = w;
-                              newCanvas.height = h;
-                              newCanvas.id = oldCanvas.id || "gameCanvas";
-                              newCanvas.style.width = w + "px";
-                              newCanvas.style.height = h + "px";
-                              if (oldCanvas.parentNode) {
-                                  oldCanvas.parentNode.replaceChild(newCanvas, oldCanvas);
+              try {
+                  if (PIXI && PIXI.settings) {
+                      PIXI.settings.ROUND_PIXELS = true;
+                      log("ROUND_PIXELS = true");
+                  }
+              } catch (e) { err("ROUND_PIXELS: " + e); }
+
+              try {
+                  if (PIXI && PIXI.BaseTexture && PIXI.BaseTexture.defaultOptions) {
+                      PIXI.BaseTexture.defaultOptions.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                      PIXI.BaseTexture.defaultOptions.mipmap = PIXI.MIPMAP_MODES.OFF;
+                      log("BaseTexture.defaultOptions patched");
+                  }
+              } catch (e) { err("BaseTexture: " + e); }
+
+              // After Graphics.initialize fires, retrofit already-created textures
+              try {
+                  if (typeof Graphics !== "undefined" && typeof Graphics.initialize === "function") {
+                      const orig = Graphics.initialize.bind(Graphics);
+                      Graphics.initialize = function (w, h, type) {
+                          log("initialize() " + w + "x" + h + " type=" + type);
+                          orig(w, h, type);
+                          // Re-apply settings AFTER init (in case other plugins changed them)
+                          try {
+                              PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
+                              PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF;
+                          } catch (e) {}
+                          // Retrofit existing textures in cache
+                          try {
+                              let n = 0;
+                              for (const k in PIXI.utils.TextureCache) {
+                                  const tex = PIXI.utils.TextureCache[k];
+                                  if (tex && tex.baseTexture) {
+                                      tex.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                                      tex.baseTexture.update();
+                                      n++;
+                                  }
                               }
-                              this._canvas = newCanvas;
-                              this._renderer = new PIXI.CanvasRenderer(w, h, { view: newCanvas });
-                              log("RECREATED as Canvas, new type=" + this._renderer.type);
-                          } else {
-                              log("Renderer already Canvas (type=" + (this._renderer ? this._renderer.type : "null") + ")");
-                          }
-                      } catch (e) { err("recreate failed: " + e); }
-                  };
-                  log("Graphics.initialize wrapped");
-              } else {
-                  err("Graphics.initialize not found!");
-              }
+                              log("Retrofitted " + n + " textures to NEAREST");
+                          } catch (e) { err("retrofit: " + e); }
+                      };
+                      log("Graphics.initialize wrapped (post-init retrofit)");
+                  }
+              } catch (e) { err("initialize patch: " + e); }
 
-              if (typeof Graphics !== "undefined" && typeof Graphics._createRenderer === "function") {
-                  const origCreate = Graphics._createRenderer.bind(Graphics);
-                  Graphics._createRenderer = function () {
-                      origCreate();
-                      if (this._renderer && this._renderer.type !== 1) {
-                          log("_createRenderer: WebGL, recreating");
-                          try { this._renderer.destroy(true); } catch (e) {}
-                          const oldCanvas = this._canvas;
-                          const newCanvas = document.createElement("canvas");
-                          newCanvas.width = this._width;
-                          newCanvas.height = this._height;
-                          newCanvas.id = oldCanvas.id || "gameCanvas";
-                          if (oldCanvas.parentNode) oldCanvas.parentNode.replaceChild(newCanvas, oldCanvas);
-                          this._canvas = newCanvas;
-                          this._renderer = new PIXI.CanvasRenderer(this._width, this._height, { view: newCanvas });
-                      }
-                  };
-                  log("Graphics._createRenderer wrapped");
-              } else {
-                  log("Graphics._createRenderer not present (expected in this build)");
-              }
-
+              // Indicator
               window.addEventListener("load", () => {
                   setTimeout(() => {
                       try {
-                          const r = (typeof Graphics !== "undefined") ? Graphics._renderer : null;
-                          let typeStr = "none", color = "#a00";
+                          const r = Graphics._renderer;
+                          let s = "none", c = "#a00";
                           if (r) {
-                              if (r.type === 1) { typeStr = "Canvas"; color = "#0a0"; }
-                              else if (r.type === 2) { typeStr = "WebGL"; color = "#a00"; }
-                              else { typeStr = "type=" + r.type; color = "#a80"; }
+                              if (r.type === 1) { s = "Canvas"; c = "#0a0"; }
+                              else if (r.type === 2) { s = "WebGL+NEAREST"; c = "#0a0"; }
+                              else { s = "type=" + r.type; c = "#a80"; }
                           }
-                          const div = document.createElement("div");
-                          div.textContent = "R: " + typeStr;
-                          div.style.cssText = "position:fixed;top:8px;right:8px;padding:10px 18px;background:" + color + ";color:#fff;font-family:monospace;font-size:22px;font-weight:bold;z-index:2147483647;border-radius:6px;";
-                          document.body.appendChild(div);
-                          setTimeout(() => div.remove(), 15000);
+                          const d = document.createElement("div");
+                          d.textContent = "R: " + s;
+                          d.style.cssText = "position:fixed;top:8px;right:8px;padding:10px 18px;background:" + c + ";color:#fff;font-family:monospace;font-size:22px;font-weight:bold;z-index:2147483647;border-radius:6px;";
+                          document.body.appendChild(d);
+                          setTimeout(() => d.remove(), 15000);
                       } catch (e) {}
                   }, 2500);
               });
@@ -212,7 +205,7 @@ jobs:
           })();
           EOF
 
-      - name: Patch plugins.js (JSON-safe, ForceCanvas last)
+      - name: Patch plugins.js (JSON-safe)
         run: |
           python3 - <<'PYEOF'
           import re, glob, json
@@ -221,17 +214,14 @@ jobs:
 
           m = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c)
           if not m:
-              print("ERROR: cannot find $plugins array")
+              print("ERROR: $plugins array not found")
               raise SystemExit(1)
           prefix, arr_text, suffix = m.group(1), m.group(2), m.group(3) or ';'
-          print("Array length:", len(arr_text))
 
           try:
               plugins = json.loads(arr_text)
-              print("Parsed OK:", len(plugins), "plugins")
           except Exception as e:
               print("ERROR: JSON parse failed:", e)
-              print("First 200 chars:", arr_text[:200])
               raise SystemExit(1)
 
           before = len(plugins)
@@ -242,7 +232,6 @@ jobs:
               name = pl.get('name', '')
               if name == 'OrangeGreenworks':
                   pl['status'] = False
-                  print("Greenworks disabled")
               if name == 'VisuMZ_0_CoreEngine':
                   params = pl.get('parameters', {})
                   qol = params.get('QoL:struct', '')
@@ -256,13 +245,12 @@ jobs:
           plugins.append({"name": "ForceCanvas", "status": True, "description": "", "parameters": {}})
 
           new_arr = json.dumps(plugins, ensure_ascii=False)
-          c_new = prefix + new_arr + (suffix if suffix.strip() else ';')
+          c_new = prefix + new_arr + ';'
           open(p, 'w', encoding='utf-8').write(c_new)
 
           m2 = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c_new)
           verify = json.loads(m2.group(2))
-          print("Verify: parsed back,", len(verify), "plugins")
-          print("Last two:", [pl['name'] for pl in verify[-2:]])
+          print("Verify:", len(verify), "plugins, last two:", [pl['name'] for pl in verify[-2:]])
           for n in ('ForceCanvas', 'VirtualControls', 'OrangeGreenworks'):
               for pl in verify:
                   if pl.get('name') == n:
@@ -280,7 +268,7 @@ jobs:
           npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
           npx cap add android
 
-      - name: Patch Android (WindowCompat + WindowInsetsController)
+      - name: Patch Android
         run: |
           python3 - <<'PYEOF'
           import re, glob
