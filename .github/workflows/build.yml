@@ -21,86 +21,55 @@ jobs:
           mkdir -p www
           wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
           unzip -q game.zip -d www
-          echo "=== After extract ==="
-          find www -maxdepth 3 -name index.html
-          find www -maxdepth 3 -name rpg_core.js
-          find www -maxdepth 3 -name plugins.js
+          ls -la www/ | head -20
+          echo "=== js/ ==="
+          ls -la www/js/ 2>&1 | head -30
 
-      - name: Normalize game root
-        run: |
-          set -e
-          if [ -f www/index.html ]; then
-            ROOT="www"
-            echo "index.html already at www/"
-          else
-            INDEX=$(find www -name index.html -not -path '*/node_modules/*' 2>/dev/null | head -1)
-            if [ -z "$INDEX" ]; then
-              echo "ERROR: index.html not found anywhere under www/"
-              find www -maxdepth 4 -type f | head -40
-              exit 1
-            fi
-            ROOT=$(dirname "$INDEX")
-            echo "Found game root: $ROOT"
-            echo "Copying contents to www/..."
-            cp -a "$ROOT"/. www/
-            rm -rf "$ROOT" 2>/dev/null || true
-          fi
-          echo "=== Final www/ ==="
-          ls -la www/ | head -25
-          echo "=== www/js/ ==="
-          ls -la www/js/ 2>&1 | head -40
-          echo "=== rpg_core.js ==="
-          find www -name rpg_core.js
-          echo "=== plugins.js ==="
-          find www -name plugins.js
-
-      - name: Patch rpg_core.js to force Canvas
-        run: |
-          python3 - <<'PYEOF'
-          import os, glob
-          candidates = glob.glob('www/**/rpg_core.js', recursive=True)
-          if not candidates:
-              print('ERROR: rpg_core.js not found under www/')
-              print('www/js/ contents:')
-              if os.path.isdir('www/js'):
-                  for f in sorted(os.listdir('www/js'))[:50]:
-                      print('  ', f)
-              raise SystemExit(1)
-          p = candidates[0]
-          print('Using rpg_core.js:', p)
-          c = open(p, encoding='utf-8').read()
-          orig = c
-          c = c.replace("this._rendererType = type || 'auto';", "this._rendererType = 'canvas';")
-          c = c.replace("this._renderer = PIXI.autoDetectRenderer(width, height, options);",
-                        "this._renderer = new PIXI.CanvasRenderer(width, height, options);")
-          open(p, 'w', encoding='utf-8').write(c)
-          print('rendererType=canvas:', "this._rendererType = 'canvas';" in c)
-          print('CanvasRenderer default:', 'new PIXI.CanvasRenderer(width, height, options);' in c)
-          print('changed:', c != orig)
-          PYEOF
-
-      - name: Disable PixelateImageRendering
+      - name: Patch rmmz_core.js to force Canvas
         run: |
           python3 - <<'PYEOF'
           import glob
-          candidates = glob.glob('www/**/plugins.js', recursive=True)
+          candidates = glob.glob('www/**/rmmz_core.js', recursive=True)
           if not candidates:
-              print('ERROR: plugins.js not found')
+              print('ERROR: rmmz_core.js not found')
               raise SystemExit(1)
           p = candidates[0]
-          print('Using plugins.js:', p)
+          print('Using:', p)
           c = open(p, encoding='utf-8').read()
           orig = c
+
+          # Patch 1: force _rendererType = canvas (single or double quotes)
+          c = c.replace("this._rendererType = type || 'auto';", "this._rendererType = 'canvas';")
+          c = c.replace('this._rendererType = type || "auto";', 'this._rendererType = "canvas";')
+
+          # Patch 2: replace autoDetectRenderer with CanvasRenderer (option/options)
+          c = c.replace("PIXI.autoDetectRenderer(width, height, option)", "new PIXI.CanvasRenderer(width, height, option)")
+          c = c.replace("PIXI.autoDetectRenderer(width, height, options)", "new PIXI.CanvasRenderer(width, height, options)")
+
+          open(p, 'w', encoding='utf-8').write(c)
+          print('rendererType=canvas:', ("this._rendererType = 'canvas';" in c) or ('this._rendererType = "canvas";' in c))
+          print('autoDetectRenderer gone:', 'PIXI.autoDetectRenderer' not in c)
+          print('changed:', c != orig)
+          PYEOF
+
+      - name: Disable ForceCanvas plugin + Pixelate
+        run: |
+          python3 - <<'PYEOF'
+          import re, glob
+          candidates = glob.glob('www/**/plugins.js', recursive=True)
+          p = candidates[0]
+          c = open(p, encoding='utf-8').read()
+          c = re.sub(r'("name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*)true', r'\1false', c)
           c = c.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
           open(p, 'w', encoding='utf-8').write(c)
-          print('PixelateImageRendering disabled:', c != orig)
+          m = re.search(r'"name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*(\w+)', c)
+          print('ForceCanvas:', m.group(1) if m else 'NOT FOUND')
+          print('PixelateImageRendering disabled:', '"PixelateImageRendering:eval":"true"' not in c)
           PYEOF
 
       - name: Write VirtualControls plugin
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
-          echo "Plugins dir: $PLUGINS_DIR"
-          mkdir -p "$PLUGINS_DIR/plugins"
           cat > "$PLUGINS_DIR/plugins/VirtualControls.js" <<'EOF'
           (() => {
               "use strict";
@@ -167,15 +136,11 @@ jobs:
           })();
           EOF
 
-      - name: Patch plugins.js (VirtualControls on, Greenworks off)
+      - name: Patch plugins.js for VirtualControls + Greenworks
         run: |
           python3 - <<'PYEOF'
           import re, glob
-          candidates = glob.glob('www/**/plugins.js', recursive=True)
-          if not candidates:
-              print('ERROR: plugins.js not found')
-              raise SystemExit(1)
-          p = candidates[0]
+          p = glob.glob('www/**/plugins.js', recursive=True)[0]
           c = open(p, encoding='utf-8').read()
           if '"VirtualControls"' not in c:
               i = c.rfind('];')
@@ -200,10 +165,12 @@ jobs:
           npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
           npx cap add android
 
-      - name: Patch Android
+      - name: Patch Android (landscape + edge-to-edge fullscreen + immersive retries)
         run: |
           python3 - <<'PYEOF'
           import re, glob
+
+          # --- Manifest: cleartext + landscape ---
           p = 'android/app/src/main/AndroidManifest.xml'
           m = open(p, encoding='utf-8').read()
           if 'usesCleartextTraffic' not in m:
@@ -213,6 +180,7 @@ jobs:
           open(p, 'w', encoding='utf-8').write(m)
           print('manifest done')
 
+          # --- styles.xml: fullscreen in all themes ---
           p = 'android/app/src/main/res/values/styles.xml'
           s = open(p, encoding='utf-8').read()
           def fix(mt):
@@ -223,15 +191,16 @@ jobs:
                   '    <item name="android:windowFullscreen">true</item>\n'
                   '    <item name="android:windowContentOverlay">@null</item>\n'
                   '    <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>\n'
+                  '    <item name="android:windowDrawsSystemBarBackgrounds">true</item>\n'
                   '    <item name="android:windowTranslucentStatus">true</item>\n'
                   '    <item name="android:windowTranslucentNavigation">true</item>\n'
-                  '    <item name="android:windowDrawsSystemBarBackgrounds">true</item>\n'
               )
               return b.replace('</style>', items + '</style>')
           s = re.sub(r'<style\b[^>]*>.*?</style>', fix, s, flags=re.DOTALL)
           open(p, 'w', encoding='utf-8').write(s)
           print('styles fullscreen:', s.count('windowFullscreen'))
 
+          # --- MainActivity: edge-to-edge + immersive + retries ---
           paths = glob.glob('android/app/src/main/java/**/MainActivity.java', recursive=True)
           if paths:
               p = paths[0]
@@ -242,29 +211,44 @@ jobs:
                 'package ' + pkg + ';\n\n'
                 'import android.os.Build;\n'
                 'import android.os.Bundle;\n'
+                'import android.os.Handler;\n'
+                'import android.os.Looper;\n'
                 'import android.view.View;\n'
                 'import android.view.WindowInsets;\n'
                 'import android.view.WindowInsetsController;\n'
                 'import android.view.WindowManager;\n'
                 'import com.getcapacitor.BridgeActivity;\n\n'
                 'public class MainActivity extends BridgeActivity {\n'
+                '    private final Handler handler = new Handler(Looper.getMainLooper());\n'
+                '    private final Runnable hideRunnable = new Runnable() {\n'
+                '        @Override public void run() { goFullscreen(); }\n'
+                '    };\n\n'
                 '    @Override\n'
                 '    public void onCreate(Bundle s) {\n'
                 '        super.onCreate(s);\n'
+                '        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {\n'
+                '            getWindow().setDecorFitsSystemWindows(false);\n'
+                '        }\n'
+                '        getWindow().addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);\n'
+                '        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);\n'
                 '        goFullscreen();\n'
-                '    }\n'
-                '    @Override\n'
-                '    public void onResume() {\n'
-                '        super.onResume();\n'
-                '        goFullscreen();\n'
-                '    }\n'
+                '        handler.postDelayed(hideRunnable, 50);\n'
+                '        handler.postDelayed(hideRunnable, 300);\n'
+                '        handler.postDelayed(hideRunnable, 800);\n'
+                '        handler.postDelayed(hideRunnable, 1500);\n'
+                '        handler.postDelayed(hideRunnable, 3000);\n'
+                '    }\n\n'
                 '    @Override\n'
                 '    public void onWindowFocusChanged(boolean has) {\n'
                 '        super.onWindowFocusChanged(has);\n'
                 '        if (has) goFullscreen();\n'
-                '    }\n'
+                '    }\n\n'
+                '    @Override\n'
+                '    protected void onDestroy() {\n'
+                '        super.onDestroy();\n'
+                '        handler.removeCallbacks(hideRunnable);\n'
+                '    }\n\n'
                 '    private void goFullscreen() {\n'
-                '        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);\n'
                 '        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {\n'
                 '            WindowInsetsController c = getWindow().getInsetsController();\n'
                 '            if (c != null) {\n'
@@ -283,7 +267,7 @@ jobs:
                 '}\n'
               )
               open(p, 'w', encoding='utf-8').write(java)
-              print('MainActivity done')
+              print('MainActivity rewritten')
           PYEOF
 
       - name: Build
