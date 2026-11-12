@@ -16,102 +16,57 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Download game + diagnostics
+      - name: Download game
         run: |
           mkdir -p www
           wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
           unzip -q game.zip -d www
-          echo "=== MZ version ==="
-          grep -m1 "Utils.RPGMAKER_VERSION" www/js/rmmz_core.js 2>&1 || true
-          grep -m1 "RPGMAKER_NAME" www/js/rmmz_core.js 2>&1 || true
-          echo "=== Graphics.initialize full block ==="
-          sed -n '483,520p' www/js/rmmz_core.js 2>&1 | head -40
-          echo "=== Search Bitmap._createBaseTexture ==="
-          grep -n "_createBaseTexture\|_createTexture" www/js/rmmz_core.js 2>&1 | head -10 || echo "NONE"
-          echo "=== Search PIXI in rmmz_core ==="
-          grep -n "PIXI\." www/js/rmmz_core.js 2>&1 | head -15 || echo "NONE"
-          echo "=== pixi.js version ==="
-          grep -m3 "VERSION\|version" www/js/libs/pixi.js 2>&1 | head -5 || true
+          ls www/icon/ 2>&1 || true
+          file www/icon/icon.png 2>&1 || true
 
-      - name: Write ForceCanvas v6 (safe settings + Bitmap patch, no init override)
+      - name: Write ForceCanvas v7 (NEAREST + letterbox + optional speed x2)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
           (() => {
               "use strict";
-              function log(m) { console.log("[ForceCanvas] " + m); }
-              function err(m) { console.error("[ForceCanvas] " + m); }
+              function log(m) { console.log("[FC] " + m); }
+              function err(m) { console.error("[FC] " + m); }
+              log("v7 loaded");
 
-              log("v6 loaded - safe settings + Bitmap patch only");
-
-              // 1) PIXI settings — apply if available
+              // --- NEAREST settings ---
+              try { PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST; } catch (e) {}
+              try { PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
+              try { PIXI.settings.ROUND_PIXELS = true; } catch (e) {}
               try {
-                  if (PIXI && PIXI.settings && PIXI.SCALE_MODES) {
-                      PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
-                      log("settings.SCALE_MODE = NEAREST");
-                  }
-              } catch (e) { err("settings.SCALE_MODE: " + e); }
-
-              try {
-                  if (PIXI && PIXI.settings && PIXI.MIPMAP_MODES) {
-                      PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF;
-                      log("settings.MIPMAP_TEXTURES = OFF");
-                  }
-              } catch (e) { err("settings.MIPMAP: " + e); }
-
-              try {
-                  if (PIXI && PIXI.settings) {
-                      PIXI.settings.ROUND_PIXELS = true;
-                      log("settings.ROUND_PIXELS = true");
-                  }
-              } catch (e) { err("settings.ROUND_PIXELS: " + e); }
-
-              // 2) BaseTexture default options
-              try {
-                  if (PIXI && PIXI.BaseTexture && PIXI.BaseTexture.defaultOptions) {
+                  if (PIXI.BaseTexture && PIXI.BaseTexture.defaultOptions) {
                       PIXI.BaseTexture.defaultOptions.scaleMode = PIXI.SCALE_MODES.NEAREST;
                       PIXI.BaseTexture.defaultOptions.mipmap = PIXI.MIPMAP_MODES.OFF;
-                      log("BaseTexture.defaultOptions patched");
                   }
-              } catch (e) { err("BaseTexture.defaultOptions: " + e); }
+              } catch (e) {}
 
-              // 3) Patch Bitmap._createBaseTexture (новые текстуры)
+              // --- Bitmap patch ---
               try {
                   if (typeof Bitmap !== "undefined" && Bitmap.prototype._createBaseTexture) {
-                      const origBase = Bitmap.prototype._createBaseTexture;
-                      Bitmap.prototype._createBaseTexture = function (bitmap) {
-                          const bt = origBase.call(this, bitmap);
-                          try {
-                              bt.scaleMode = PIXI.SCALE_MODES.NEAREST;
-                              bt.mipmap = PIXI.MIPMAP_MODES.OFF;
-                              bt.update();
-                          } catch (e) {}
+                      const orig = Bitmap.prototype._createBaseTexture;
+                      Bitmap.prototype._createBaseTexture = function (b) {
+                          const bt = orig.call(this, b);
+                          try { bt.scaleMode = PIXI.SCALE_MODES.NEAREST; bt.mipmap = PIXI.MIPMAP_MODES.OFF; bt.update(); } catch (e) {}
                           return bt;
                       };
-                      log("Bitmap._createBaseTexture patched");
-                  } else {
-                      log("Bitmap._createBaseTexture not found, trying alternative");
                   }
-              } catch (e) { err("Bitmap patch: " + e); }
+              } catch (e) { err("Bitmap: " + e); }
 
-              // 4) Retrofit already-loaded textures periodically (безопасно)
-              let retrofitCount = 0;
+              // --- Retrofit textures ---
               function retrofit() {
                   try {
-                      if (!PIXI || !PIXI.utils || !PIXI.utils.TextureCache) return;
-                      let n = 0;
                       const cache = PIXI.utils.TextureCache;
                       for (const k in cache) {
-                          const tex = cache[k];
-                          if (tex && tex.baseTexture && tex.baseTexture.scaleMode !== PIXI.SCALE_MODES.NEAREST) {
-                              tex.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
-                              tex.baseTexture.update();
-                              n++;
+                          const t = cache[k];
+                          if (t && t.baseTexture && t.baseTexture.scaleMode !== PIXI.SCALE_MODES.NEAREST) {
+                              t.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                              t.baseTexture.update();
                           }
-                      }
-                      if (n > 0) {
-                          retrofitCount += n;
-                          log("retrofitted " + n + " textures (total " + retrofitCount + ")");
                       }
                   } catch (e) {}
               }
@@ -120,36 +75,131 @@ jobs:
               setTimeout(retrofit, 3000);
               setTimeout(retrofit, 6000);
 
-              // 5) Indicator
+              // --- Letterbox: canvas fills viewport, keeps aspect ---
+              function fixLayout() {
+                  const c = Graphics._canvas;
+                  if (!c) return;
+                  c.style.position = "absolute";
+                  c.style.left = "0";
+                  c.style.top = "0";
+                  c.style.width = "100vw";
+                  c.style.height = "100vh";
+                  c.style.objectFit = "contain";
+                  c.style.transform = "none";
+                  c.style.background = "#000";
+                  c.style.display = "block";
+                  document.body.style.background = "#000";
+                  document.body.style.margin = "0";
+                  document.body.style.padding = "0";
+                  document.body.style.overflow = "hidden";
+              }
+              try {
+                  if (typeof Graphics !== "undefined" && Graphics._updateCanvas) {
+                      const origUC = Graphics._updateCanvas.bind(Graphics);
+                      Graphics._updateCanvas = function () {
+                          origUC();
+                          fixLayout();
+                      };
+                  }
+              } catch (e) { err("updateCanvas patch: " + e); }
+              window.addEventListener("resize", fixLayout);
+              setTimeout(fixLayout, 100);
+              setTimeout(fixLayout, 1000);
+
+              // --- Speed x2 (optional, reads localStorage) ---
+              function readSpeed() {
+                  try {
+                      const raw = localStorage.getItem("vc_cfg");
+                      if (raw) {
+                          const c = JSON.parse(raw);
+                          return c.speedX2 === true;
+                      }
+                  } catch (e) {}
+                  return false;
+              }
+              let speedOn = readSpeed();
+              window.__vc_setSpeed = function (on) { speedOn = !!on; };
+
+              try {
+                  const origUpdate = SceneManager.update.bind(SceneManager);
+                  const origUpdateInput = SceneManager.updateInputData.bind(SceneManager);
+                  let skipInput = 0;
+                  SceneManager.update = function (deltaTime) {
+                      origUpdate(deltaTime);
+                      if (speedOn) {
+                          skipInput++;
+                          origUpdate(deltaTime);
+                          skipInput--;
+                      }
+                  };
+                  SceneManager.updateInputData = function () {
+                      if (skipInput > 0) return;
+                      origUpdateInput();
+                  };
+                  log("speed x2 hook installed");
+              } catch (e) { err("speed hook: " + e); }
+
+              // --- Indicator ---
               window.addEventListener("load", () => {
                   setTimeout(() => {
                       try {
                           const r = Graphics._renderer;
-                          let s = "none", c = "#a00";
+                          let s = "?", c = "#a80";
                           if (r) {
                               if (r.type === 1) { s = "Canvas"; c = "#0a0"; }
                               else if (r.type === 2) { s = "WebGL+NEAREST"; c = "#0a0"; }
-                              else { s = "type=" + r.type; c = "#a80"; }
+                              else { s = "type=" + r.type; c = "#0a0"; }
                           }
                           const d = document.createElement("div");
                           d.textContent = "R: " + s;
-                          d.style.cssText = "position:fixed;top:8px;right:8px;padding:10px 18px;background:" + c + ";color:#fff;font-family:monospace;font-size:22px;font-weight:bold;z-index:2147483647;border-radius:6px;";
+                          d.style.cssText = "position:fixed;top:8px;left:8px;padding:6px 12px;background:" + c + ";color:#fff;font-family:monospace;font-size:14px;font-weight:bold;z-index:2147483647;border-radius:4px;opacity:0.7;";
                           document.body.appendChild(d);
-                          setTimeout(() => d.remove(), 15000);
+                          setTimeout(() => d.remove(), 10000);
                       } catch (e) {}
                   }, 2500);
               });
           })();
           EOF
 
-      - name: Write VirtualControls plugin
+      - name: Write VirtualControls v2 (settings panel, drag, custom buttons)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/VirtualControls.js" <<'EOF'
           (() => {
               "use strict";
-              const CFG = { dpadSize: 150, dpadMargin: 30, btnSize: 68, btnMargin: 40, btnGap: 14, opacity: 0.45 };
+
+              const DEFAULT = {
+                  opacity: 0.45,
+                  scale: 1.0,
+                  color: "#ffffff",
+                  hideInMenu: false,
+                  speedX2: false,
+                  positions: null  // null = default layout; otherwise {up,down,left,right,ok,no,mnu:{x,y}} in vw/vh percent
+              };
+
+              function loadCfg() {
+                  try {
+                      const raw = localStorage.getItem("vc_cfg");
+                      if (raw) {
+                          const p = JSON.parse(raw);
+                          return Object.assign({}, DEFAULT, p);
+                      }
+                  } catch (e) {}
+                  return Object.assign({}, DEFAULT);
+              }
+              function saveCfg() {
+                  try { localStorage.setItem("vc_cfg", JSON.stringify(CFG)); } catch (e) {}
+              }
+
+              let CFG = loadCfg();
               let root = null;
+              let editMode = false;
+              let panelOpen = false;
+              let buttons = {};
+
+              if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2);
+
+              // --- StatusBar hide ---
               function tryHideStatusBar() {
                   try {
                       if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar) {
@@ -163,22 +213,60 @@ jobs:
               setTimeout(tryHideStatusBar, 2000);
               setTimeout(tryHideStatusBar, 5000);
 
+              // --- Input helper ---
               function setKey(key, on) {
-                  if (key === "menu") {
+                  if (key === "mnu") {
                       if (on && SceneManager._scene instanceof Scene_Map && !$gameMessage.isBusy()) {
                           SceneManager._scene.callMenu();
                       }
                       return;
                   }
-                  Input._currentState[key] = on;
-                  if (on) { Input._latestButton = key; Input._pressedTime = 0; }
+                  const map = { ok: "ok", no: "cancel", up: "up", down: "down", left: "left", right: "right" };
+                  const inputKey = map[key];
+                  if (!inputKey) return;
+                  Input._currentState[inputKey] = on;
+                  if (on) {
+                      Input._latestButton = inputKey;
+                      Input._pressedTime = 0;
+                  }
               }
-              function makeEl(id, label, style) {
+
+              // --- Color helpers ---
+              function parseColor(hex) {
+                  hex = hex.replace('#', '');
+                  if (hex.length === 3) hex = hex.split('').map(c => c+c).join('');
+                  return {
+                      r: parseInt(hex.slice(0,2),16),
+                      g: parseInt(hex.slice(2,4),16),
+                      b: parseInt(hex.slice(4,6),16)
+                  };
+              }
+              function bgRgba(hex, a) {
+                  const c = parseColor(hex);
+                  return "rgba(" + c.r + "," + c.g + "," + c.b + "," + a + ")";
+              }
+              function isLight(hex) {
+                  const c = parseColor(hex);
+                  return (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
+              }
+
+              // --- Element creation ---
+              function makeButton(id, label, size, circular) {
                   const el = document.createElement("div");
                   el.textContent = label;
-                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:Arial,sans-serif;font-weight:bold;color:#fff;z-index:2147483646;border-radius:50%;" + style;
-                  const start = (e) => { e.preventDefault(); e.stopPropagation(); setKey(id, true); };
-                  const end = (e) => { if (e) { e.preventDefault(); e.stopPropagation(); } setKey(id, false); };
+                  el.dataset.vcid = id;
+                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:'Courier New',monospace;font-weight:bold;z-index:2147483646;border-radius:" + (circular ? "50%" : "10px") + ";transition:none;";
+                  updateButtonStyle(el, id, size);
+                  const start = (e) => {
+                      e.preventDefault(); e.stopPropagation();
+                      if (editMode) { startDrag(e, el, id); return; }
+                      setKey(id, true);
+                  };
+                  const end = (e) => {
+                      if (e) { e.preventDefault(); e.stopPropagation(); }
+                      if (editMode) return;
+                      setKey(id, false);
+                  };
                   el.addEventListener("touchstart", start, { passive: false });
                   el.addEventListener("touchend", end, { passive: false });
                   el.addEventListener("touchcancel", end);
@@ -187,39 +275,328 @@ jobs:
                   el.addEventListener("mouseleave", end);
                   return el;
               }
+              function updateButtonStyle(el, id, baseSize) {
+                  const sz = Math.round(baseSize * CFG.scale);
+                  el.style.width = sz + "px";
+                  el.style.height = sz + "px";
+                  el.style.background = bgRgba(CFG.color, CFG.opacity);
+                  el.style.border = "2px solid " + bgRgba(CFG.color, Math.min(1, CFG.opacity + 0.3));
+                  el.style.color = isLight(CFG.color) ? "#000" : "#fff";
+                  el.style.fontSize = Math.round(sz * 0.35) + "px";
+                  if (editMode) {
+                      el.style.outline = "2px dashed #ff0";
+                  } else {
+                      el.style.outline = "none";
+                  }
+              }
+
+              // --- Drag & drop ---
+              let dragState = null;
+              function startDrag(e, el, id) {
+                  const t = (e.touches && e.touches[0]) || e;
+                  const rect = el.getBoundingClientRect();
+                  dragState = {
+                      el: el, id: id,
+                      offsetX: t.clientX - rect.left,
+                      offsetY: t.clientY - rect.top
+                  };
+                  e.preventDefault();
+              }
+              document.addEventListener("touchmove", (e) => {
+                  if (!dragState) return;
+                  const t = e.touches[0];
+                  const x = t.clientX - dragState.offsetX;
+                  const y = t.clientY - dragState.offsetY;
+                  dragState.el.style.left = x + "px";
+                  dragState.el.style.top = y + "px";
+                  e.preventDefault();
+              }, { passive: false });
+              document.addEventListener("mousemove", (e) => {
+                  if (!dragState) return;
+                  const x = e.clientX - dragState.offsetX;
+                  const y = e.clientY - dragState.offsetY;
+                  dragState.el.style.left = x + "px";
+                  dragState.el.style.top = y + "px";
+              });
+              function endDrag() {
+                  if (!dragState) return;
+                  const el = dragState.el;
+                  const id = dragState.id;
+                  const rect = el.getBoundingClientRect();
+                  const pct = {
+                      x: rect.left / innerWidth * 100,
+                      y: rect.top / innerHeight * 100
+                  };
+                  if (!CFG.positions) CFG.positions = {};
+                  CFG.positions[id] = pct;
+                  saveCfg();
+                  dragState = null;
+              }
+              document.addEventListener("touchend", endDrag);
+              document.addEventListener("mouseup", endDrag);
+
+              // --- Layout calculation ---
+              function getPos(id) {
+                  if (CFG.positions && CFG.positions[id]) {
+                      return CFG.positions[id];
+                  }
+                  // defaults
+                  const vw = 100, vh = 100;
+                  const dpad = 150 * CFG.scale;
+                  const btn = 68 * CFG.scale;
+                  const margin = 30;
+                  const dpadSize = 150;
+                  const as = dpadSize / 3;
+                  const ds = dpadSize;
+                  const base = { left: margin, top: vh - (ds + margin) / innerHeight * 100 };
+                  const baseL = margin / innerWidth * 100;
+                  const baseT = (innerHeight - (ds + margin)) / innerHeight * 100;
+                  const asL = as / innerWidth * 100;
+                  const asT = as / innerHeight * 100;
+                  const btnL = (innerWidth - margin - btn) / innerWidth * 100;
+                  const btnT = (innerHeight - margin - btn) / innerHeight * 100;
+                  const stepL = (btn + 14) / innerWidth * 100;
+                  switch (id) {
+                      case "up":    return { x: baseL + asL, y: baseT };
+                      case "down":  return { x: baseL + asL, y: baseT + asT * 2 };
+                      case "left":  return { x: baseL, y: baseT + asT };
+                      case "right": return { x: baseL + asL * 2, y: baseT + asT };
+                      case "ok":    return { x: btnL, y: btnT };
+                      case "no":    return { x: btnL - stepL, y: btnT };
+                      case "mnu":   return { x: btnL - stepL * 2, y: btnT };
+                      default: return { x: 50, y: 50 };
+                  }
+              }
+              function applyPos(el, id) {
+                  const p = getPos(id);
+                  el.style.left = p.x + "%";
+                  el.style.top = p.y + "%";
+              }
+
+              // --- Show/hide logic ---
+              function shouldShowFull() {
+                  const s = SceneManager._scene;
+                  if (!s) return false;
+                  if (s instanceof Scene_Battle) return true;
+                  if (s instanceof Scene_Map) {
+                      return !$gameMessage.isBusy();
+                  }
+                  // Menu, Title, Shop, etc.
+                  return !CFG.hideInMenu;
+              }
+              function updateVisibility() {
+                  if (!root) return;
+                  const full = shouldShowFull();
+                  ["up","down","left","right","no","mnu"].forEach(id => {
+                      const el = buttons[id];
+                      if (!el) return;
+                      el.style.display = full ? "flex" : "none";
+                  });
+                  // OK всегда видна, кроме message (там скрываем чтобы не мешала)
+                  const okEl = buttons["ok"];
+                  if (okEl) {
+                      const s = SceneManager._scene;
+                      const inMessage = (s instanceof Scene_Map) && $gameMessage.isBusy();
+                      okEl.style.display = inMessage ? "none" : "flex";
+                  }
+              }
+
+              // --- Settings panel ---
+              function buildPanel() {
+                  const p = document.createElement("div");
+                  p.id = "vc-panel";
+                  p.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(90vw,500px);max-height:85vh;overflow-y:auto;background:rgba(20,20,30,0.95);color:#fff;font-family:Arial,sans-serif;padding:20px;border-radius:12px;z-index:2147483647;box-shadow:0 4px 20px rgba(0,0,0,0.8);display:none;";
+
+                  const title = document.createElement("div");
+                  title.textContent = "Настройки управления";
+                  title.style.cssText = "font-size:20px;font-weight:bold;margin-bottom:16px;text-align:center;";
+                  p.appendChild(title);
+
+                  function row(label, control) {
+                      const r = document.createElement("div");
+                      r.style.cssText = "margin-bottom:14px;display:flex;align-items:center;gap:10px;";
+                      const l = document.createElement("div");
+                      l.textContent = label;
+                      l.style.cssText = "flex:0 0 140px;font-size:14px;";
+                      r.appendChild(l);
+                      r.appendChild(control);
+                      p.appendChild(r);
+                  }
+
+                  // opacity
+                  const opIn = document.createElement("input");
+                  opIn.type = "range"; opIn.min = "10"; opIn.max = "100"; opIn.step = "5";
+                  opIn.value = Math.round(CFG.opacity * 100);
+                  opIn.style.flex = "1";
+                  opIn.oninput = () => { CFG.opacity = parseInt(opIn.value) / 100; saveCfg(); applyStyles(); };
+                  row("Прозрачность", opIn);
+
+                  // scale
+                  const scIn = document.createElement("input");
+                  scIn.type = "range"; scIn.min = "60"; scIn.max = "150"; scIn.step = "5";
+                  scIn.value = Math.round(CFG.scale * 100);
+                  scIn.style.flex = "1";
+                  scIn.oninput = () => { CFG.scale = parseInt(scIn.value) / 100; saveCfg(); applyStyles(); applyAllPositions(); };
+                  row("Размер", scIn);
+
+                  // color
+                  const colorWrap = document.createElement("div");
+                  colorWrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
+                  const colors = [
+                      { name: "Белый", hex: "#ffffff" },
+                      { name: "Чёрный", hex: "#202020" },
+                      { name: "Красный", hex: "#d04040" },
+                      { name: "Синий", hex: "#4060d0" },
+                      { name: "Зелёный", hex: "#40a040" },
+                      { name: "Жёлтый", hex: "#d0a020" }
+                  ];
+                  colors.forEach(c => {
+                      const cb = document.createElement("div");
+                      cb.style.cssText = "width:34px;height:34px;border-radius:50%;background:" + c.hex + ";cursor:pointer;border:3px solid " + (CFG.color === c.hex ? "#fff" : "transparent") + ";";
+                      cb.title = c.name;
+                      cb.onclick = () => {
+                          CFG.color = c.hex;
+                          saveCfg();
+                          applyStyles();
+                          Array.from(colorWrap.children).forEach(ch => ch.style.border = "3px solid transparent");
+                          cb.style.border = "3px solid #fff";
+                      };
+                      colorWrap.appendChild(cb);
+                  });
+                  row("Цвет", colorWrap);
+
+                  // hideInMenu toggle
+                  const hiBtn = document.createElement("button");
+                  hiBtn.textContent = CFG.hideInMenu ? "ВКЛ" : "ВЫКЛ";
+                  hiBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (CFG.hideInMenu ? "#40a040" : "#606060") + ";color:#fff;font-size:14px;";
+                  hiBtn.onclick = () => {
+                      CFG.hideInMenu = !CFG.hideInMenu;
+                      saveCfg();
+                      hiBtn.textContent = CFG.hideInMenu ? "ВКЛ" : "ВЫКЛ";
+                      hiBtn.style.background = CFG.hideInMenu ? "#40a040" : "#606060";
+                  };
+                  row("Скрывать в меню", hiBtn);
+
+                  // speed x2
+                  const spBtn = document.createElement("button");
+                  spBtn.textContent = CFG.speedX2 ? "ВКЛ" : "ВЫКЛ";
+                  spBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (CFG.speedX2 ? "#40a040" : "#606060") + ";color:#fff;font-size:14px;";
+                  spBtn.onclick = () => {
+                      CFG.speedX2 = !CFG.speedX2;
+                      saveCfg();
+                      spBtn.textContent = CFG.speedX2 ? "ВКЛ" : "ВЫКЛ";
+                      spBtn.style.background = CFG.speedX2 ? "#40a040" : "#606060";
+                      if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2);
+                  };
+                  row("Ускорение x2", spBtn);
+
+                  // edit mode
+                  const edBtn = document.createElement("button");
+                  edBtn.textContent = editMode ? "ГОТОВО" : "РАССТАВИТЬ";
+                  edBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (editMode ? "#d0a020" : "#4060d0") + ";color:#fff;font-size:14px;";
+                  edBtn.onclick = () => {
+                      editMode = !editMode;
+                      edBtn.textContent = editMode ? "ГОТОВО" : "РАССТАВИТЬ";
+                      edBtn.style.background = editMode ? "#d0a020" : "#4060d0";
+                      applyStyles();
+                  };
+                  row("Позиции кнопок", edBtn);
+
+                  // reset
+                  const rsBtn = document.createElement("button");
+                  rsBtn.textContent = "СБРОС";
+                  rsBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:#a02020;color:#fff;font-size:14px;";
+                  rsBtn.onclick = () => {
+                      CFG = Object.assign({}, DEFAULT);
+                      saveCfg();
+                      if (window.__vc_setSpeed) window.__vc_setSpeed(false);
+                      applyStyles();
+                      applyAllPositions();
+                  };
+                  row("Сбросить всё", rsBtn);
+
+                  // close
+                  const closeBtn = document.createElement("button");
+                  closeBtn.textContent = "ЗАКРЫТЬ";
+                  closeBtn.style.cssText = "width:100%;padding:10px;margin-top:8px;border:none;border-radius:6px;cursor:pointer;background:#404060;color:#fff;font-size:16px;font-weight:bold;";
+                  closeBtn.onclick = () => { panelOpen = false; p.style.display = "none"; };
+                  p.appendChild(closeBtn);
+
+                  document.body.appendChild(p);
+                  return p;
+              }
+              let panel = null;
+              function togglePanel() {
+                  if (!panel) panel = buildPanel();
+                  panelOpen = !panelOpen;
+                  panel.style.display = panelOpen ? "block" : "none";
+              }
+
+              function applyStyles() {
+                  if (!root) return;
+                  const base = { up: 50, down: 50, left: 50, right: 50, ok: 68, no: 68, mnu: 68 };
+                  for (const id in buttons) {
+                      updateButtonStyle(buttons[id], id, base[id] || 68);
+                  }
+                  if (settingsBtn) {
+                      const s = 40;
+                      settingsBtn.style.width = s + "px";
+                      settingsBtn.style.height = s + "px";
+                      settingsBtn.style.fontSize = "20px";
+                      settingsBtn.style.background = bgRgba(CFG.color, Math.min(0.8, CFG.opacity + 0.2));
+                      settingsBtn.style.color = isLight(CFG.color) ? "#000" : "#fff";
+                  }
+              }
+              function applyAllPositions() {
+                  for (const id in buttons) {
+                      applyPos(buttons[id], id);
+                  }
+              }
+
+              let settingsBtn = null;
+
               function build() {
                   if (root) return;
                   root = document.createElement("div");
                   root.id = "vc-root";
                   root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646;";
                   document.body.appendChild(root);
-                  const vw = innerWidth, vh = innerHeight;
-                  const ds = CFG.dpadSize, dm = CFG.dpadMargin;
-                  const as = ds / 3, dx = dm, dy = vh - ds - dm;
-                  const arrowStyle = "background:rgba(255,255,255," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);border-radius:10px;font-size:24px;";
-                  const add = (id, label, left, top, size, style) => {
-                      const el = makeEl(id, label, style + "left:" + left + "px;top:" + top + "px;width:" + size + "px;height:" + size + "px;");
-                      root.appendChild(el);
-                  };
-                  add("up", "▲", dx + as, dy, as, arrowStyle);
-                  add("down", "▼", dx + as, dy + as * 2, as, arrowStyle);
-                  add("left", "◀", dx, dy + as, as, arrowStyle);
-                  add("right", "▶", dx + as * 2, dy + as, as, arrowStyle);
-                  const bs = CFG.btnSize, bm = CFG.btnMargin, bg = CFG.btnGap;
-                  const okStyle = "background:rgba(80,200,80," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);font-size:22px;";
-                  const cancelStyle = "background:rgba(200,80,80," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);font-size:22px;";
-                  const menuStyle = "background:rgba(80,80,200," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);font-size:26px;";
-                  const dashStyle = "background:rgba(220,180,40," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);font-size:22px;";
-                  add("ok", "OK", vw - bm - bs, vh - bm - bs, bs, okStyle);
-                  add("cancel", "X", vw - bm - bs * 2 - bg, vh - bm - bs, bs, cancelStyle);
-                  add("shift", "⇧", vw - bm - bs * 3 - bg * 2, vh - bm - bs, bs, dashStyle);
-                  add("menu", "≡", vw - bm - bs, vh - bm - bs * 2 - bg, bs, menuStyle);
+
+                  // D-pad (4 separate buttons)
+                  buttons.up = makeButton("up", "▲", 50, false);
+                  buttons.down = makeButton("down", "▼", 50, false);
+                  buttons.left = makeButton("left", "◀", 50, false);
+                  buttons.right = makeButton("right", "▶", 50, false);
+
+                  // action buttons
+                  buttons.ok = makeButton("ok", "ok.", 68, true);
+                  buttons.no = makeButton("no", "no.", 68, true);
+                  buttons.mnu = makeButton("mnu", "mnu", 68, true);
+
+                  for (const id in buttons) {
+                      root.appendChild(buttons[id]);
+                  }
+
+                  // settings gear
+                  settingsBtn = document.createElement("div");
+                  settingsBtn.textContent = "⚙";
+                  settingsBtn.style.cssText = "position:fixed;top:8px;right:8px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;z-index:2147483646;font-family:Arial;font-weight:bold;user-select:none;-webkit-user-select:none;touch-action:none;";
+                  settingsBtn.addEventListener("touchstart", (e) => { e.preventDefault(); e.stopPropagation(); togglePanel(); }, { passive: false });
+                  settingsBtn.addEventListener("click", (e) => { e.preventDefault(); togglePanel(); });
+                  root.appendChild(settingsBtn);
+
+                  applyStyles();
+                  applyAllPositions();
+                  updateVisibility();
+                  setInterval(updateVisibility, 500);
+                  console.log("[VC] ready");
               }
+
               window.addEventListener("load", () => setTimeout(build, 200));
               let rt = null;
               window.addEventListener("resize", () => {
                   clearTimeout(rt);
-                  rt = setTimeout(() => { if (root) { root.remove(); root = null; } build(); }, 300);
+                  rt = setTimeout(() => { applyAllPositions(); applyStyles(); }, 300);
               });
           })();
           EOF
@@ -230,45 +607,32 @@ jobs:
           import re, glob, json
           p = glob.glob('www/**/plugins.js', recursive=True)[0]
           c = open(p, encoding='utf-8').read()
-
           m = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c)
           if not m:
-              print("ERROR: $plugins array not found")
-              raise SystemExit(1)
+              print("ERROR: $plugins array not found"); raise SystemExit(1)
           prefix, arr_text, suffix = m.group(1), m.group(2), m.group(3) or ';'
-
           try:
               plugins = json.loads(arr_text)
           except Exception as e:
-              print("ERROR: JSON parse failed:", e)
-              raise SystemExit(1)
-
+              print("ERROR: JSON parse failed:", e); raise SystemExit(1)
           before = len(plugins)
-          plugins = [pl for pl in plugins if pl.get('name') not in ('ForceCanvas', 'VirtualControls')]
-          print("Removed existing:", before - len(plugins))
-
+          plugins = [pl for pl in plugins if pl.get('name') not in ('ForceCanvas','VirtualControls')]
+          print("Removed:", before - len(plugins))
           for pl in plugins:
-              name = pl.get('name', '')
-              if name == 'OrangeGreenworks':
-                  pl['status'] = False
-              if name == 'VisuMZ_0_CoreEngine':
+              if pl.get('name') == 'OrangeGreenworks': pl['status'] = False
+              if pl.get('name') == 'VisuMZ_0_CoreEngine':
                   params = pl.get('parameters', {})
                   qol = params.get('QoL:struct', '')
                   if isinstance(qol, str):
-                      qol_new = qol.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
-                      if qol != qol_new:
-                          params['QoL:struct'] = qol_new
-
-          plugins.append({"name": "VirtualControls", "status": True, "description": "", "parameters": {}})
-          plugins.append({"name": "ForceCanvas", "status": True, "description": "", "parameters": {}})
-
-          new_arr = json.dumps(plugins, ensure_ascii=False)
-          c_new = prefix + new_arr + ';'
+                      qol2 = qol.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
+                      if qol != qol2: params['QoL:struct'] = qol2
+          plugins.append({"name":"VirtualControls","status":True,"description":"","parameters":{}})
+          plugins.append({"name":"ForceCanvas","status":True,"description":"","parameters":{}})
+          c_new = prefix + json.dumps(plugins, ensure_ascii=False) + ';'
           open(p, 'w', encoding='utf-8').write(c_new)
-
           m2 = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c_new)
           verify = json.loads(m2.group(2))
-          print("Verify:", len(verify), "plugins, last two:", [pl['name'] for pl in verify[-2:]])
+          print("Verify:", len(verify), "last two:", [pl['name'] for pl in verify[-2:]])
           PYEOF
 
       - name: Install Capacitor
@@ -280,6 +644,23 @@ jobs:
         run: |
           npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
           npx cap add android
+
+      - name: Set app icon from www/icon/icon.png
+        run: |
+          SRC=$(find www -name "icon.png" -path "*icon*" 2>/dev/null | head -1)
+          if [ -z "$SRC" ]; then SRC=$(find www -name "icon.png" | head -1); fi
+          echo "Icon source: $SRC"
+          file "$SRC"
+          # Remove adaptive icon so Android uses PNG directly
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26 2>/dev/null || true
+          for pair in "mdpi 48" "hdpi 72" "xhdpi 96" "xxhdpi 144" "xxxhdpi 192"; do
+            folder="${pair% *}"
+            size="${pair#* }"
+            convert "$SRC" -resize ${size}x${size} android/app/src/main/res/mipmap-${folder}/ic_launcher.png
+            convert "$SRC" -resize ${size}x${size} android/app/src/main/res/mipmap-${folder}/ic_launcher_round.png
+            echo "  -> mipmap-${folder} (${size}px)"
+          done
+          echo "Icons replaced."
 
       - name: Patch Android
         run: |
@@ -299,8 +680,7 @@ jobs:
           s = open(p, encoding='utf-8').read()
           def fix(mt):
               b = mt.group(0)
-              if 'windowFullscreen' in b:
-                  return b
+              if 'windowFullscreen' in b: return b
               return b.replace('</style>', '    <item name="android:windowFullscreen">true</item>\n</style>')
           s = re.sub(r'<style\b[^>]*>.*?</style>', fix, s, flags=re.DOTALL)
           open(p, 'w', encoding='utf-8').write(s)
@@ -365,7 +745,7 @@ jobs:
                 '}\n'
               )
               open(p, 'w', encoding='utf-8').write(java)
-              print('MainActivity rewritten (WindowCompat)')
+              print('MainActivity rewritten')
           PYEOF
 
       - name: Build
