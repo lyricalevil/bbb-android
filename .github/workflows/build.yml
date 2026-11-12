@@ -24,7 +24,7 @@ jobs:
           ls www/icon/ 2>&1 || true
           file www/icon/icon.png 2>&1 || true
 
-      - name: Write ForceCanvas v7 (NEAREST + letterbox + speed x2)
+      - name: Write ForceCanvas v7
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
@@ -33,7 +33,6 @@ jobs:
               function log(m) { console.log("[FC] " + m); }
               function err(m) { console.error("[FC] " + m); }
               log("v7 loaded");
-
               try { PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST; } catch (e) {}
               try { PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
               try { PIXI.settings.ROUND_PIXELS = true; } catch (e) {}
@@ -43,7 +42,6 @@ jobs:
                       PIXI.BaseTexture.defaultOptions.mipmap = PIXI.MIPMAP_MODES.OFF;
                   }
               } catch (e) {}
-
               try {
                   if (typeof Bitmap !== "undefined" && Bitmap.prototype._createBaseTexture) {
                       const orig = Bitmap.prototype._createBaseTexture;
@@ -54,7 +52,6 @@ jobs:
                       };
                   }
               } catch (e) { err("Bitmap: " + e); }
-
               function retrofit() {
                   try {
                       const cache = PIXI.utils.TextureCache;
@@ -67,23 +64,16 @@ jobs:
                       }
                   } catch (e) {}
               }
-              setTimeout(retrofit, 500);
-              setTimeout(retrofit, 1500);
-              setTimeout(retrofit, 3000);
-              setTimeout(retrofit, 6000);
-
+              setTimeout(retrofit, 500); setTimeout(retrofit, 1500);
+              setTimeout(retrofit, 3000); setTimeout(retrofit, 6000);
               function fixLayout() {
                   const c = Graphics._canvas;
                   if (!c) return;
                   c.style.position = "absolute";
-                  c.style.left = "0";
-                  c.style.top = "0";
-                  c.style.width = "100vw";
-                  c.style.height = "100vh";
-                  c.style.objectFit = "contain";
-                  c.style.transform = "none";
-                  c.style.background = "#000";
-                  c.style.display = "block";
+                  c.style.left = "0"; c.style.top = "0";
+                  c.style.width = "100vw"; c.style.height = "100vh";
+                  c.style.objectFit = "contain"; c.style.transform = "none";
+                  c.style.background = "#000"; c.style.display = "block";
                   document.body.style.background = "#000";
                   document.body.style.margin = "0";
                   document.body.style.padding = "0";
@@ -92,83 +82,68 @@ jobs:
               try {
                   if (typeof Graphics !== "undefined" && Graphics._updateCanvas) {
                       const origUC = Graphics._updateCanvas.bind(Graphics);
-                      Graphics._updateCanvas = function () {
-                          origUC();
-                          fixLayout();
-                      };
+                      Graphics._updateCanvas = function () { origUC(); fixLayout(); };
                   }
-              } catch (e) { err("updateCanvas: " + e); }
+              } catch (e) {}
               window.addEventListener("resize", fixLayout);
-              setTimeout(fixLayout, 100);
-              setTimeout(fixLayout, 1000);
-
+              setTimeout(fixLayout, 100); setTimeout(fixLayout, 1000);
               function readSpeed() {
-                  try {
-                      const raw = localStorage.getItem("vc_cfg");
-                      if (raw) return JSON.parse(raw).speedX2 === true;
-                  } catch (e) {}
+                  try { const raw = localStorage.getItem("vc_cfg"); if (raw) return JSON.parse(raw).speedX2 === true; } catch (e) {}
                   return false;
               }
               let speedOn = readSpeed();
               window.__vc_setSpeed = function (on) { speedOn = !!on; };
-
               try {
                   const origUpdate = SceneManager.update.bind(SceneManager);
                   const origUpdateInput = SceneManager.updateInputData.bind(SceneManager);
                   let skipInput = 0;
-                  SceneManager.update = function (deltaTime) {
-                      origUpdate(deltaTime);
-                      if (speedOn) {
-                          skipInput++;
-                          origUpdate(deltaTime);
-                          skipInput--;
-                      }
+                  SceneManager.update = function (dt) {
+                      origUpdate(dt);
+                      if (speedOn) { skipInput++; origUpdate(dt); skipInput--; }
                   };
                   SceneManager.updateInputData = function () {
                       if (skipInput > 0) return;
                       origUpdateInput();
                   };
-                  log("speed hook installed");
               } catch (e) { err("speed hook: " + e); }
-
-              window.addEventListener("load", () => {
-                  setTimeout(() => {
-                      try {
-                          const r = Graphics._renderer;
-                          let s = "?", c = "#a80";
-                          if (r) {
-                              if (r.type === 1) { s = "Canvas"; c = "#0a0"; }
-                              else if (r.type === 2) { s = "WebGL+NEAREST"; c = "#0a0"; }
-                              else { s = "type=" + r.type; c = "#0a0"; }
-                          }
-                          const d = document.createElement("div");
-                          d.textContent = "R: " + s;
-                          d.style.cssText = "position:fixed;top:8px;left:8px;padding:6px 12px;background:" + c + ";color:#fff;font-family:monospace;font-size:14px;font-weight:bold;z-index:2147483647;border-radius:4px;opacity:0.7;";
-                          document.body.appendChild(d);
-                          setTimeout(() => d.remove(), 10000);
-                      } catch (e) {}
-                  }, 2500);
-              });
           })();
           EOF
 
-      - name: Write VirtualControls v2 (settings panel)
+      - name: Write VirtualControls v3 (working panel + no auto-hide)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/VirtualControls.js" <<'EOF'
           (() => {
               "use strict";
-              const DEFAULT = { opacity: 0.45, scale: 1.0, color: "#ffffff", hideInMenu: false, speedX2: false, positions: null };
+              const CFG_VERSION = 3;
+              const DEFAULT = {
+                  _version: CFG_VERSION,
+                  opacity: 0.45,
+                  scale: 1.0,
+                  color: "#ffffff",
+                  hideInMenu: false,
+                  hideInMessage: false,
+                  speedX2: false,
+                  positions: null
+              };
               function loadCfg() {
                   try {
                       const raw = localStorage.getItem("vc_cfg");
-                      if (raw) return Object.assign({}, DEFAULT, JSON.parse(raw));
+                      if (raw) {
+                          const p = JSON.parse(raw);
+                          if (p._version !== CFG_VERSION) {
+                              return Object.assign({}, DEFAULT);
+                          }
+                          return Object.assign({}, DEFAULT, p, { _version: CFG_VERSION });
+                      }
                   } catch (e) {}
                   return Object.assign({}, DEFAULT);
               }
               function saveCfg() {
+                  CFG._version = CFG_VERSION;
                   try { localStorage.setItem("vc_cfg", JSON.stringify(CFG)); } catch (e) {}
               }
+
               let CFG = loadCfg();
               let root = null;
               let editMode = false;
@@ -178,6 +153,10 @@ jobs:
               let panel = null;
 
               if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2);
+
+              function dbg(m) {
+                  console.log("[VC] " + m);
+              }
 
               function tryHideStatusBar() {
                   try {
@@ -191,6 +170,21 @@ jobs:
               setTimeout(tryHideStatusBar, 500);
               setTimeout(tryHideStatusBar, 2000);
               setTimeout(tryHideStatusBar, 5000);
+
+              // --- Unified tap: touchstart + click, debounced ---
+              function attachTap(el, callback) {
+                  let last = 0;
+                  const handler = (e) => {
+                      if (e) { e.preventDefault(); e.stopPropagation(); }
+                      const now = Date.now();
+                      if (now - last < 250) return;
+                      last = now;
+                      try { callback(); } catch (err) { console.error("[VC] tap err:", err); }
+                  };
+                  el.addEventListener("touchstart", handler, { passive: false });
+                  el.addEventListener("click", handler);
+                  el.addEventListener("mousedown", handler);
+              }
 
               function setKey(key, on) {
                   if (key === "mnu") {
@@ -220,6 +214,7 @@ jobs:
                   return (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
               }
 
+              // --- VC buttons (game buttons) ---
               function makeButton(id, label, baseSize, circular) {
                   const el = document.createElement("div");
                   el.textContent = label;
@@ -316,127 +311,182 @@ jobs:
                   el.style.top = p.y + "%";
               }
 
-              function shouldShowFull() {
-                  const s = SceneManager._scene;
-                  if (!s) return false;
-                  if (s instanceof Scene_Battle) return true;
-                  if (s instanceof Scene_Map) return !$gameMessage.isBusy();
-                  return !CFG.hideInMenu;
-              }
+              // --- Visibility: no auto-hide by default ---
               function updateVisibility() {
                   if (!root) return;
-                  const full = shouldShowFull();
-                  ["up","down","left","right","no","mnu"].forEach(id => {
-                      const el = buttons[id];
-                      if (el) el.style.display = full ? "flex" : "none";
-                  });
-                  const okEl = buttons["ok"];
-                  if (okEl) {
-                      const s = SceneManager._scene;
-                      const inMessage = (s instanceof Scene_Map) && $gameMessage.isBusy();
-                      okEl.style.display = inMessage ? "none" : "flex";
+                  const s = SceneManager._scene;
+                  if (!s) return;
+
+                  let showDPad = true;
+                  let showActions = true;
+                  let showOK = true;
+
+                  const isGameScene = (s instanceof Scene_Map) || (s instanceof Scene_Battle);
+
+                  if (!isGameScene && CFG.hideInMenu) {
+                      showDPad = false;
+                      showActions = false;
+                      showOK = true;
                   }
+                  if (s instanceof Scene_Map && CFG.hideInMessage && $gameMessage.isBusy()) {
+                      showDPad = false;
+                      showActions = false;
+                      showOK = false;
+                  }
+
+                  ["up","down","left","right"].forEach(id => {
+                      if (buttons[id]) buttons[id].style.display = showDPad ? "flex" : "none";
+                  });
+                  ["no","mnu"].forEach(id => {
+                      if (buttons[id]) buttons[id].style.display = showActions ? "flex" : "none";
+                  });
+                  if (buttons["ok"]) buttons["ok"].style.display = showOK ? "flex" : "none";
+              }
+
+              // --- Panel: buttons as divs with attachTap ---
+              function makePanelBtn(label, callback, styleExtra) {
+                  const d = document.createElement("div");
+                  d.textContent = label;
+                  d.style.cssText = "display:flex;align-items:center;justify-content:center;padding:10px 16px;border-radius:6px;cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:manipulation;font-size:14px;font-weight:bold;color:#fff;" + (styleExtra || "");
+                  attachTap(d, callback);
+                  return d;
+              }
+
+              function row(p, label, control) {
+                  const r = document.createElement("div");
+                  r.style.cssText = "margin-bottom:14px;display:flex;align-items:center;gap:10px;";
+                  const l = document.createElement("div");
+                  l.textContent = label;
+                  l.style.cssText = "flex:0 0 150px;font-size:14px;color:#ddd;";
+                  r.appendChild(l);
+                  r.appendChild(control);
+                  p.appendChild(r);
               }
 
               function buildPanel() {
                   const p = document.createElement("div");
-                  p.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(90vw,500px);max-height:85vh;overflow-y:auto;background:rgba(20,20,30,0.95);color:#fff;font-family:Arial,sans-serif;padding:20px;border-radius:12px;z-index:2147483647;box-shadow:0 4px 20px rgba(0,0,0,0.8);display:none;";
+                  p.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(90vw,520px);max-height:88vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:rgba(20,20,30,0.97);color:#fff;font-family:Arial,sans-serif;padding:20px;border-radius:12px;z-index:2147483647;box-shadow:0 4px 20px rgba(0,0,0,0.8);display:none;touch-action:pan-y;";
+
+                  // Block touchstart from reaching MZ's document handler
+                  p.addEventListener("touchstart", (e) => { e.stopPropagation(); }, { passive: true });
+
                   const title = document.createElement("div");
-                  title.textContent = "Настройки управления";
-                  title.style.cssText = "font-size:20px;font-weight:bold;margin-bottom:16px;text-align:center;";
+                  title.textContent = "Настройки управления v3";
+                  title.style.cssText = "font-size:18px;font-weight:bold;margin-bottom:16px;text-align:center;";
                   p.appendChild(title);
 
-                  function row(label, control) {
-                      const r = document.createElement("div");
-                      r.style.cssText = "margin-bottom:14px;display:flex;align-items:center;gap:10px;";
-                      const l = document.createElement("div");
-                      l.textContent = label;
-                      l.style.cssText = "flex:0 0 140px;font-size:14px;";
-                      r.appendChild(l); r.appendChild(control); p.appendChild(r);
-                  }
-
+                  // Opacity
                   const opIn = document.createElement("input");
-                  opIn.type = "range"; opIn.min = "10"; opIn.max = "100"; opIn.step = "5";
-                  opIn.value = Math.round(CFG.opacity * 100); opIn.style.flex = "1";
-                  opIn.oninput = () => { CFG.opacity = parseInt(opIn.value) / 100; saveCfg(); applyStyles(); };
-                  row("Прозрачность", opIn);
+                  opIn.type = "range";
+                  opIn.min = "10"; opIn.max = "100"; opIn.step = "5";
+                  opIn.value = Math.round(CFG.opacity * 100);
+                  opIn.style.cssText = "flex:1;touch-action:manipulation;";
+                  opIn.addEventListener("input", () => {
+                      CFG.opacity = parseInt(opIn.value) / 100;
+                      saveCfg(); applyStyles();
+                  });
+                  opIn.addEventListener("touchstart", (e) => { e.stopPropagation(); }, { passive: true });
+                  row(p, "Прозрачность", opIn);
 
+                  // Scale
                   const scIn = document.createElement("input");
-                  scIn.type = "range"; scIn.min = "60"; scIn.max = "150"; scIn.step = "5";
-                  scIn.value = Math.round(CFG.scale * 100); scIn.style.flex = "1";
-                  scIn.oninput = () => { CFG.scale = parseInt(scIn.value) / 100; saveCfg(); applyStyles(); applyAllPositions(); };
-                  row("Размер", scIn);
+                  scIn.type = "range";
+                  scIn.min = "60"; scIn.max = "150"; scIn.step = "5";
+                  scIn.value = Math.round(CFG.scale * 100);
+                  scIn.style.cssText = "flex:1;touch-action:manipulation;";
+                  scIn.addEventListener("input", () => {
+                      CFG.scale = parseInt(scIn.value) / 100;
+                      saveCfg(); applyStyles(); applyAllPositions();
+                  });
+                  scIn.addEventListener("touchstart", (e) => { e.stopPropagation(); }, { passive: true });
+                  row(p, "Размер", scIn);
 
+                  // Color
                   const cw = document.createElement("div");
                   cw.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
-                  [
+                  const colors = [
                       { name: "Белый", hex: "#ffffff" },
                       { name: "Чёрный", hex: "#202020" },
                       { name: "Красный", hex: "#d04040" },
                       { name: "Синий", hex: "#4060d0" },
                       { name: "Зелёный", hex: "#40a040" },
                       { name: "Жёлтый", hex: "#d0a020" }
-                  ].forEach(c => {
+                  ];
+                  colors.forEach(c => {
                       const cb = document.createElement("div");
-                      cb.style.cssText = "width:34px;height:34px;border-radius:50%;background:" + c.hex + ";cursor:pointer;border:3px solid " + (CFG.color === c.hex ? "#fff" : "transparent") + ";";
+                      cb.style.cssText = "width:36px;height:36px;border-radius:50%;background:" + c.hex + ";cursor:pointer;border:3px solid " + (CFG.color === c.hex ? "#fff" : "transparent") + ";touch-action:manipulation;";
                       cb.title = c.name;
-                      cb.onclick = () => {
-                          CFG.color = c.hex; saveCfg(); applyStyles();
+                      attachTap(cb, () => {
+                          CFG.color = c.hex;
+                          saveCfg(); applyStyles();
                           Array.from(cw.children).forEach(ch => ch.style.border = "3px solid transparent");
                           cb.style.border = "3px solid #fff";
-                      };
+                      });
                       cw.appendChild(cb);
                   });
-                  row("Цвет", cw);
+                  row(p, "Цвет", cw);
 
+                  // Toggles
                   function toggle(label, key, onChange) {
-                      const b = document.createElement("button");
-                      b.textContent = CFG[key] ? "ВКЛ" : "ВЫКЛ";
-                      b.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (CFG[key] ? "#40a040" : "#606060") + ";color:#fff;font-size:14px;";
-                      b.onclick = () => {
-                          CFG[key] = !CFG[key]; saveCfg();
+                      const b = makePanelBtn("", () => {}, "");
+                      b.style.padding = "6px 16px";
+                      b.style.minWidth = "80px";
+                      function refresh() {
                           b.textContent = CFG[key] ? "ВКЛ" : "ВЫКЛ";
                           b.style.background = CFG[key] ? "#40a040" : "#606060";
+                      }
+                      refresh();
+                      attachTap(b, () => {
+                          CFG[key] = !CFG[key];
+                          saveCfg(); refresh();
                           if (onChange) onChange();
-                      };
-                      row(label, b);
-                      return b;
+                      });
+                      row(p, label, b);
                   }
                   toggle("Скрывать в меню", "hideInMenu");
+                  toggle("Скрывать в диалогах", "hideInMessage");
                   toggle("Ускорение x2", "speedX2", () => { if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2); });
 
-                  const edBtn = document.createElement("button");
-                  edBtn.textContent = editMode ? "ГОТОВО" : "РАССТАВИТЬ";
-                  edBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (editMode ? "#d0a020" : "#4060d0") + ";color:#fff;font-size:14px;";
-                  edBtn.onclick = () => {
-                      editMode = !editMode;
+                  // Edit mode
+                  const edBtn = makePanelBtn("", () => {});
+                  edBtn.style.padding = "6px 16px";
+                  function refreshEdit() {
                       edBtn.textContent = editMode ? "ГОТОВО" : "РАССТАВИТЬ";
                       edBtn.style.background = editMode ? "#d0a020" : "#4060d0";
+                  }
+                  refreshEdit();
+                  attachTap(edBtn, () => {
+                      editMode = !editMode;
+                      refreshEdit();
                       applyStyles();
-                  };
-                  row("Позиции кнопок", edBtn);
+                  });
+                  row(p, "Позиции кнопок", edBtn);
 
-                  const rsBtn = document.createElement("button");
-                  rsBtn.textContent = "СБРОС";
-                  rsBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:#a02020;color:#fff;font-size:14px;";
-                  rsBtn.onclick = () => {
-                      CFG = Object.assign({}, DEFAULT);
+                  // Reset
+                  const rsBtn = makePanelBtn("СБРОС", () => {
+                      const vs = CFG.speedX2;
+                      CFG = Object.assign({}, DEFAULT, { _version: CFG_VERSION });
                       saveCfg();
                       if (window.__vc_setSpeed) window.__vc_setSpeed(false);
                       applyStyles();
                       applyAllPositions();
-                  };
-                  row("Сбросить всё", rsBtn);
+                      // Reload panel to reflect new values
+                      if (panel) { panel.remove(); panel = null; panelOpen = false; }
+                  }, "background:#a02020;");
+                  rsBtn.style.padding = "6px 16px";
+                  row(p, "Сбросить всё", rsBtn);
 
-                  const closeBtn = document.createElement("button");
-                  closeBtn.textContent = "ЗАКРЫТЬ";
-                  closeBtn.style.cssText = "width:100%;padding:10px;margin-top:8px;border:none;border-radius:6px;cursor:pointer;background:#404060;color:#fff;font-size:16px;font-weight:bold;";
-                  closeBtn.onclick = () => { panelOpen = false; p.style.display = "none"; };
+                  // Close
+                  const closeBtn = makePanelBtn("ЗАКРЫТЬ", () => {
+                      panelOpen = false;
+                      p.style.display = "none";
+                  }, "background:#404060;width:100%;padding:12px;margin-top:8px;font-size:16px;");
                   p.appendChild(closeBtn);
 
                   document.body.appendChild(p);
                   return p;
               }
+
               function togglePanel() {
                   if (!panel) panel = buildPanel();
                   panelOpen = !panelOpen;
@@ -466,6 +516,7 @@ jobs:
                   root.id = "vc-root";
                   root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646;";
                   document.body.appendChild(root);
+
                   buttons.up = makeButton("up", "▲", 50, false);
                   buttons.down = makeButton("down", "▼", 50, false);
                   buttons.left = makeButton("left", "◀", 50, false);
@@ -473,18 +524,20 @@ jobs:
                   buttons.ok = makeButton("ok", "ok.", 68, true);
                   buttons.no = makeButton("no", "no.", 68, true);
                   buttons.mnu = makeButton("mnu", "mnu", 68, true);
+
                   for (const id in buttons) root.appendChild(buttons[id]);
+
                   settingsBtn = document.createElement("div");
                   settingsBtn.textContent = "⚙";
-                  settingsBtn.style.cssText = "position:fixed;top:8px;right:8px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;z-index:2147483646;font-family:Arial;font-weight:bold;user-select:none;-webkit-user-select:none;touch-action:none;";
-                  settingsBtn.addEventListener("touchstart", (e) => { e.preventDefault(); e.stopPropagation(); togglePanel(); }, { passive: false });
-                  settingsBtn.addEventListener("click", (e) => { e.preventDefault(); togglePanel(); });
+                  settingsBtn.style.cssText = "position:fixed;top:8px;right:8px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;z-index:2147483646;font-family:Arial;font-weight:bold;user-select:none;-webkit-user-select:none;touch-action:manipulation;";
+                  attachTap(settingsBtn, togglePanel);
                   root.appendChild(settingsBtn);
+
                   applyStyles();
                   applyAllPositions();
                   updateVisibility();
                   setInterval(updateVisibility, 500);
-                  console.log("[VC] ready");
+                  dbg("ready");
               }
 
               window.addEventListener("load", () => setTimeout(build, 200));
@@ -525,9 +578,7 @@ jobs:
           plugins.append({"name":"ForceCanvas","status":True,"description":"","parameters":{}})
           c_new = prefix + json.dumps(plugins, ensure_ascii=False) + ';'
           open(p, 'w', encoding='utf-8').write(c_new)
-          m2 = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c_new)
-          verify = json.loads(m2.group(2))
-          print("Verify:", len(verify), "last two:", [pl['name'] for pl in verify[-2:]])
+          print("Verify OK")
           PYEOF
 
       - name: Install Capacitor
@@ -540,56 +591,36 @@ jobs:
           npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
           npx cap add android
 
-      - name: Set app icon from www/icon/icon.png
+      - name: Set app icon
         run: |
-          SRC=$(find www -name "icon.png" -path "*icon*" 2>/dev/null | head -1)
-          if [ -z "$SRC" ]; then SRC=$(find www -name "icon.png" | head -1); fi
-          echo "Icon source: $SRC"
-          file "$SRC" 2>&1 || true
-
           rm -rf android/app/src/main/res/mipmap-anydpi-v26 2>/dev/null || true
-
           python3 -m pip install --quiet Pillow
-
           python3 - <<'PYEOF'
           from PIL import Image
           import os, glob
-
           candidates = glob.glob("www/icon/icon.png") or glob.glob("www/**/icon.png", recursive=True)
           if not candidates:
-              print("ERROR: icon.png not found anywhere")
-              raise SystemExit(1)
+              print("ERROR: icon.png not found"); raise SystemExit(1)
           src = candidates[0]
           print("Using:", src)
-
           img = Image.open(src).convert("RGBA")
           print("Source size:", img.size)
-
-          sizes = {
-              "mipmap-mdpi":    48,
-              "mipmap-hdpi":    72,
-              "mipmap-xhdpi":   96,
-              "mipmap-xxhdpi":  144,
-              "mipmap-xxxhdpi": 192,
-          }
+          sizes = {"mipmap-mdpi":48,"mipmap-hdpi":72,"mipmap-xhdpi":96,"mipmap-xxhdpi":144,"mipmap-xxxhdpi":192}
           res = "android/app/src/main/res"
           for folder, size in sizes.items():
               fp = os.path.join(res, folder)
               os.makedirs(fp, exist_ok=True)
-              resized = img.resize((size, size), Image.LANCZOS)
-              p1 = os.path.join(fp, "ic_launcher.png")
-              p2 = os.path.join(fp, "ic_launcher_round.png")
-              resized.save(p1, "PNG")
-              resized.save(p2, "PNG")
-              print(f"  {folder}: {size}x{size} -> OK")
-          print("Icons replaced OK")
+              r = img.resize((size, size), Image.LANCZOS)
+              r.save(os.path.join(fp, "ic_launcher.png"), "PNG")
+              r.save(os.path.join(fp, "ic_launcher_round.png"), "PNG")
+              print(f"  {folder}: {size}x{size}")
+          print("Icons OK")
           PYEOF
 
       - name: Patch Android
         run: |
           python3 - <<'PYEOF'
           import re, glob
-
           p = 'android/app/src/main/AndroidManifest.xml'
           m = open(p, encoding='utf-8').read()
           if 'usesCleartextTraffic' not in m:
@@ -597,8 +628,6 @@ jobs:
           if 'screenOrientation' not in m:
               m = m.replace('android:name=".MainActivity"', 'android:name=".MainActivity"\n            android:screenOrientation="sensorLandscape"', 1)
           open(p, 'w', encoding='utf-8').write(m)
-          print('manifest done')
-
           p = 'android/app/src/main/res/values/styles.xml'
           s = open(p, encoding='utf-8').read()
           def fix(mt):
@@ -607,8 +636,6 @@ jobs:
               return b.replace('</style>', '    <item name="android:windowFullscreen">true</item>\n</style>')
           s = re.sub(r'<style\b[^>]*>.*?</style>', fix, s, flags=re.DOTALL)
           open(p, 'w', encoding='utf-8').write(s)
-          print('styles fullscreen:', s.count('windowFullscreen'))
-
           paths = glob.glob('android/app/src/main/java/**/MainActivity.java', recursive=True)
           if paths:
               p = paths[0]
@@ -668,7 +695,7 @@ jobs:
                 '}\n'
               )
               open(p, 'w', encoding='utf-8').write(java)
-              print('MainActivity rewritten')
+          print("Android patches OK")
           PYEOF
 
       - name: Build
