@@ -32,9 +32,9 @@ jobs:
           echo "=== js/libs/ ==="
           ls -la www/js/libs/ 2>&1 || true
           echo "=== Search Graphics.initialize ==="
-          grep -rn "Graphics.initialize\|Graphics.initialize =" www/js/ 2>&1 | head -10 || echo "NONE"
+          grep -rn "Graphics.initialize" www/js/ 2>&1 | head -10 || echo "NONE"
 
-      - name: Write ForceCanvas v4 (recreate after init)
+      - name: Write ForceCanvas v4 (recreate after init + NEAREST filter)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
@@ -46,7 +46,6 @@ jobs:
 
               log("v4 loaded");
 
-              // ---- 1) PIXI settings (WebGL-фикс на случай если Canvas не сработает) ----
               try {
                   PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
                   PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF;
@@ -56,7 +55,6 @@ jobs:
                   log("PIXI settings patched (NEAREST + MIPMAP OFF)");
               } catch (e) { err("PIXI settings: " + e); }
 
-              // ---- 2) Patch Graphics.initialize — пересоздать как Canvas после оригинала ----
               if (typeof Graphics !== "undefined" && typeof Graphics.initialize === "function") {
                   const origInit = Graphics.initialize.bind(Graphics);
                   Graphics.initialize = function (w, h, type) {
@@ -66,7 +64,6 @@ jobs:
                           if (this._renderer && this._renderer.type !== 1) {
                               log("WebGL detected (type=" + this._renderer.type + "), recreating as Canvas");
                               try { this._renderer.destroy(true); } catch (e) { log("destroy fail: " + e); }
-                              // Create fresh canvas
                               const oldCanvas = this._canvas;
                               const newCanvas = document.createElement("canvas");
                               newCanvas.width = w;
@@ -90,7 +87,6 @@ jobs:
                   err("Graphics.initialize not found!");
               }
 
-              // ---- 3) Also patch _createRenderer if exists ----
               if (typeof Graphics !== "undefined" && typeof Graphics._createRenderer === "function") {
                   const origCreate = Graphics._createRenderer.bind(Graphics);
                   Graphics._createRenderer = function () {
@@ -113,7 +109,6 @@ jobs:
                   log("Graphics._createRenderer not present (expected in this build)");
               }
 
-              // ---- 4) Indicator ----
               window.addEventListener("load", () => {
                   setTimeout(() => {
                       try {
@@ -217,56 +212,62 @@ jobs:
           })();
           EOF
 
-      - name: Patch plugins.js (dedupe, ForceCanvas last)
+      - name: Patch plugins.js (JSON-safe, ForceCanvas last)
         run: |
           python3 - <<'PYEOF'
-          import re, glob
+          import re, glob, json
           p = glob.glob('www/**/plugins.js', recursive=True)[0]
           c = open(p, encoding='utf-8').read()
 
-          def remove_plugin(text, name):
-              search = ['"name": "{}"'.format(name), '"name":"{}"'.format(name)]
-              while True:
-                  idx = -1
-                  for s in search:
-                      idx = text.find(s)
-                      if idx != -1: break
-                  if idx == -1: break
-                  start = text.rfind('{', 0, idx)
-                  if start == -1: break
-                  depth = 0
-                  end = -1
-                  for i in range(start, len(text)):
-                      if text[i] == '{': depth += 1
-                      elif text[i] == '}':
-                          depth -= 1
-                          if depth == 0:
-                              end = i
-                              break
-                  if end == -1: break
-                  after = end + 1
-                  while after < len(text) and text[after] in ' \t\n\r': after += 1
-                  if after < len(text) and text[after] == ',':
-                      end = after
-                  text = text[:start] + text[end+1:]
-              return text
+          m = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c)
+          if not m:
+              print("ERROR: cannot find $plugins array")
+              raise SystemExit(1)
+          prefix, arr_text, suffix = m.group(1), m.group(2), m.group(3) or ';'
+          print("Array length:", len(arr_text))
 
-          c = remove_plugin(c, 'ForceCanvas')
-          c = remove_plugin(c, 'VirtualControls')
-          i = c.rfind('];')
-          if i != -1:
-              c = c[:i] + '{"name":"VirtualControls","status":true,"description":"","parameters":{}},' \
-                          + '{"name":"ForceCanvas","status":true,"description":"","parameters":{}}' + c[i:]
+          try:
+              plugins = json.loads(arr_text)
+              print("Parsed OK:", len(plugins), "plugins")
+          except Exception as e:
+              print("ERROR: JSON parse failed:", e)
+              print("First 200 chars:", arr_text[:200])
+              raise SystemExit(1)
 
-          c = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true', r'\1false', c)
-          c = c.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
+          before = len(plugins)
+          plugins = [pl for pl in plugins if pl.get('name') not in ('ForceCanvas', 'VirtualControls')]
+          print("Removed existing:", before - len(plugins))
 
-          open(p, 'w', encoding='utf-8').write(c)
-          for n in ("ForceCanvas", "VirtualControls", "OrangeGreenworks"):
-              all_statuses = re.findall(r'"name"\s*:\s*"' + n + r'"\s*,\s*"status"\s*:\s*(\w+)', c)
-              print(n + ": " + str(all_statuses))
-          print("--- tail ---")
-          print(c[-300:])
+          for pl in plugins:
+              name = pl.get('name', '')
+              if name == 'OrangeGreenworks':
+                  pl['status'] = False
+                  print("Greenworks disabled")
+              if name == 'VisuMZ_0_CoreEngine':
+                  params = pl.get('parameters', {})
+                  qol = params.get('QoL:struct', '')
+                  if isinstance(qol, str):
+                      qol_new = qol.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
+                      if qol != qol_new:
+                          params['QoL:struct'] = qol_new
+                          print("Pixelate disabled")
+
+          plugins.append({"name": "VirtualControls", "status": True, "description": "", "parameters": {}})
+          plugins.append({"name": "ForceCanvas", "status": True, "description": "", "parameters": {}})
+
+          new_arr = json.dumps(plugins, ensure_ascii=False)
+          c_new = prefix + new_arr + (suffix if suffix.strip() else ';')
+          open(p, 'w', encoding='utf-8').write(c_new)
+
+          m2 = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c_new)
+          verify = json.loads(m2.group(2))
+          print("Verify: parsed back,", len(verify), "plugins")
+          print("Last two:", [pl['name'] for pl in verify[-2:]])
+          for n in ('ForceCanvas', 'VirtualControls', 'OrangeGreenworks'):
+              for pl in verify:
+                  if pl.get('name') == n:
+                      print(n + ":", pl.get('status'))
+                      break
           PYEOF
 
       - name: Install Capacitor
@@ -317,9 +318,6 @@ jobs:
                 'import android.os.Bundle;\n'
                 'import android.os.Handler;\n'
                 'import android.os.Looper;\n'
-                'import android.view.View;\n'
-                'import android.view.WindowInsets;\n'
-                'import android.view.WindowInsetsController;\n'
                 'import android.view.WindowManager;\n'
                 'import androidx.core.view.WindowCompat;\n'
                 'import androidx.core.view.WindowInsetsCompat;\n'
