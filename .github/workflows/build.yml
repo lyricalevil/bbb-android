@@ -57,7 +57,7 @@ jobs:
           cat > www/js/plugins/VirtualControls.js << 'JSEOF'
           (() => {
               "use strict";
-              const CFG = { dpadSize: 150, dpadMargin: 20, btnSize: 68, btnMargin: 20, btnGap: 12, opacity: 0.45 };
+              const CFG = { dpadSize: 150, dpadMargin: 30, btnSize: 68, btnMargin: 70, btnGap: 14, opacity: 0.45 };
               let root = null;
               function setKey(key, on) {
                   if (key === "menu") {
@@ -72,7 +72,7 @@ jobs:
               function makeEl(id, label, style) {
                   const el = document.createElement("div");
                   el.textContent = label;
-                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:Arial,sans-serif;font-weight:bold;color:#fff;z-index:99999;border-radius:50%;" + style;
+                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:Arial,sans-serif;font-weight:bold;color:#fff;z-index:2147483647;border-radius:50%;" + style;
                   const start = (e) => { e.preventDefault(); e.stopPropagation(); setKey(id, true); };
                   const end = (e) => { if (e) { e.preventDefault(); e.stopPropagation(); } setKey(id, false); };
                   el.addEventListener("touchstart", start, { passive: false });
@@ -87,6 +87,7 @@ jobs:
                   if (root) return;
                   root = document.createElement("div");
                   root.id = "vc-root";
+                  root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;";
                   document.body.appendChild(root);
                   const vw = innerWidth, vh = innerHeight;
                   const ds = CFG.dpadSize, dm = CFG.dpadMargin;
@@ -109,7 +110,7 @@ jobs:
                   add("cancel", "X", vw - bm - bs * 2 - bg, vh - bm - bs, bs, cancelStyle);
                   add("shift", "⇧", vw - bm - bs * 3 - bg * 2, vh - bm - bs, bs, dashStyle);
                   add("menu", "≡", vw - bm - bs, vh - bm - bs * 2 - bg, bs, menuStyle);
-                  console.log("[VirtualControls] ready");
+                  console.log("[VirtualControls] ready; margin=" + bm);
               }
               window.addEventListener("load", () => setTimeout(build, 200));
               let rt = null;
@@ -120,26 +121,43 @@ jobs:
           })();
           JSEOF
 
-      - name: Patch plugins.js (robust, handles CRLF)
+      - name: Patch plugins.js (regex, handles spaces + enable ForceCanvas/VC)
         run: |
           python3 << 'PYEOF'
           import re
+
           with open('www/js/plugins.js', 'r', encoding='utf-8') as f:
-              content = f.read()
-          if '"ForceCanvas"' not in content:
-              content = re.sub(r'(\$plugins\s*=\s*)\[', r'\1[{"name":"ForceCanvas","status":true,"description":"","parameters":{}},', content, count=1)
-          if '"VirtualControls"' not in content:
-              idx = content.rfind('];')
+              c = f.read()
+
+          # --- ForceCanvas: ensure present AND enabled ---
+          if '"ForceCanvas"' not in c:
+              c = re.sub(r'(\$plugins\s*=\s*)\[',
+                         r'\1[{"name":"ForceCanvas","status":true,"description":"Forces Canvas renderer","parameters":{}},',
+                         c, count=1)
+          else:
+              c = re.sub(r'("name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*)false',
+                         r'\1true', c)
+
+          # --- VirtualControls: same ---
+          if '"VirtualControls"' not in c:
+              idx = c.rfind('];')
               if idx != -1:
-                  content = content[:idx] + ',{"name":"VirtualControls","status":true,"description":"","parameters":{}}' + content[idx:]
-          content = content.replace('"name":"OrangeGreenworks","status":true', '"name":"OrangeGreenworks","status":false')
+                  c = c[:idx] + ',{"name":"VirtualControls","status":true,"description":"On-screen controls","parameters":{}}' + c[idx:]
+          else:
+              c = re.sub(r'("name"\s*:\s*"VirtualControls"\s*,\s*"status"\s*:\s*)false',
+                         r'\1true', c)
+
+          # --- OrangeGreenworks: disable (handles spaces) ---
+          c = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true',
+                     r'\1false', c)
+
           with open('www/js/plugins.js', 'w', encoding='utf-8') as f:
-              f.write(content)
-          print('ForceCanvas present:', '"ForceCanvas"' in content)
-          print('VirtualControls present:', '"VirtualControls"' in content)
-          print('OrangeGreenworks disabled:', '"name":"OrangeGreenworks","status":false' in content)
-          print()
-          print(content[:400])
+              f.write(c)
+
+          print("=== VERIFY ===")
+          for name in ("ForceCanvas", "VirtualControls", "OrangeGreenworks"):
+              m = re.search(r'"name"\s*:\s*"' + name + r'"\s*,\s*"status"\s*:\s*(\w+)', c)
+              print(f"{name}: {m.group(1) if m else 'NOT FOUND'}")
           PYEOF
 
       - name: Install Capacitor
@@ -153,87 +171,103 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Patch Android (landscape + fullscreen + cleartext)
+      - name: Patch Android (all themes fullscreen + immersive + landscape)
         run: |
           python3 << 'PYEOF'
-          import glob
+          import re, glob
 
-          # --- 1. AndroidManifest: landscape + cleartext ---
+          # --- 1. Manifest: cleartext + landscape ---
           mpath = 'android/app/src/main/AndroidManifest.xml'
           with open(mpath, 'r', encoding='utf-8') as f:
               m = f.read()
 
           if 'usesCleartextTraffic' not in m:
-              m = m.replace('<application', '<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"', 1)
+              m = m.replace('<application',
+                  '<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"', 1)
 
           if 'android:screenOrientation' not in m:
-              m = m.replace(
-                  'android:name=".MainActivity"',
-                  'android:name=".MainActivity"\n            android:screenOrientation="sensorLandscape"',
-                  1
-              )
+              m = m.replace('android:name=".MainActivity"',
+                  'android:name=".MainActivity"\n            android:screenOrientation="sensorLandscape"', 1)
 
           with open(mpath, 'w', encoding='utf-8') as f:
               f.write(m)
-          print('manifest: cleartext=', 'usesCleartextTraffic' in m, ', screenOrientation=', 'screenOrientation' in m)
+          print('manifest OK: cleartext=', 'usesCleartextTraffic' in m, 'landscape=', 'screenOrientation' in m)
 
-          # --- 2. styles.xml: fullscreen theme ---
+          # --- 2. styles.xml: add fullscreen to EVERY <style> block ---
           spath = 'android/app/src/main/res/values/styles.xml'
           with open(spath, 'r', encoding='utf-8') as f:
               s = f.read()
 
-          if 'windowFullscreen' not in s:
-              anchor = '<item name="windowActionBar">false</item>'
-              if anchor in s:
-                  s = s.replace(
-                      anchor,
-                      anchor + '\n        <item name="android:windowFullscreen">true</item>\n        <item name="android:windowContentOverlay">@null</item>',
-                      1
-                  )
-              with open(spath, 'w', encoding='utf-8') as f:
-                  f.write(s)
-          print('styles: windowFullscreen=', 'windowFullscreen' in s)
+          def patch_style(match):
+              block = match.group(0)
+              if 'windowFullscreen' in block:
+                  return block
+              return block.replace('</style>',
+                  '    <item name="android:windowFullscreen">true</item>\n'
+                  '    <item name="android:windowContentOverlay">@null</item>\n'
+                  '    <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>\n'
+                  '</style>')
 
-          # --- 3. MainActivity.java: immersive sticky ---
+          s2 = re.sub(r'<style\b[^>]*>.*?</style>', patch_style, s, flags=re.DOTALL)
+          with open(spath, 'w', encoding='utf-8') as f:
+              f.write(s2)
+          print('styles: fullscreen in', s2.count('windowFullscreen'), 'theme(s)')
+
+          # --- 3. MainActivity: full rewrite ---
           paths = glob.glob('android/app/src/main/java/**/MainActivity.java', recursive=True)
           if not paths:
               print('ERROR: MainActivity.java not found')
           else:
               p = paths[0]
-              print('Patching:', p)
               with open(p, 'r', encoding='utf-8') as f:
-                  ma = f.read()
+                  old = f.read()
+              pm = re.search(r'package\s+([\w.]+);', old)
+              pkg = pm.group(1) if pm else 'com.badbit.chblasters'
 
-              if 'import android.view.View;' not in ma:
-                  ma = ma.replace(
-                      'import com.getcapacitor.BridgeActivity;',
-                      'import com.getcapacitor.BridgeActivity;\nimport android.view.View;',
-                      1
-                  )
+              new_main = '''package %s;
 
-              if 'onWindowFocusChanged' not in ma:
-                  idx = ma.rstrip().rfind('}')
-                  method = '''
-              @Override
-              public void onWindowFocusChanged(boolean hasFocus) {
-                  super.onWindowFocusChanged(hasFocus);
-                  if (hasFocus) {
-                      getWindow().getDecorView().setSystemUiVisibility(
-                          View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                          | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                          | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                          | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                          | View.SYSTEM_UI_FLAG_FULLSCREEN);
-                  }
-              }
-          '''
-                  ma = ma[:idx] + method + ma[idx:]
+import android.os.Bundle;
+import android.view.View;
+import android.view.WindowManager;
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getWindow().setFlags(
+            WindowManager.LayoutParams.FLAG_FULLSCREEN,
+            WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        hideSystemUI();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        hideSystemUI();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemUI();
+    }
+
+    private void hideSystemUI() {
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_FULLSCREEN);
+    }
+}
+''' % pkg
 
               with open(p, 'w', encoding='utf-8') as f:
-                  f.write(ma)
-              print('MainActivity: onWindowFocusChanged=', 'onWindowFocusChanged' in open(p).read())
-              print('MainActivity: View import=', 'import android.view.View;' in open(p).read())
+                  f.write(new_main)
+              print('MainActivity rewritten:', p)
           PYEOF
 
       - name: Build APK
