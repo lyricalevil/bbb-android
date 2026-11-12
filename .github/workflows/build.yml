@@ -8,50 +8,123 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
-      - name: Verify Android SDK
-        run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la $ANDROID_HOME || true
-
       - name: Download and extract game
         run: |
           mkdir -p www
-          echo "Downloading from:"
-          echo "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
           wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
-          echo "Extracting..."
           unzip -q game.zip -d www
           if [ ! -f www/index.html ]; then
-            echo "index.html not at root, looking for nested folder..."
             inner=$(find www -maxdepth 2 -name index.html | head -1 | xargs dirname 2>/dev/null || true)
             if [ -n "$inner" ] && [ "$inner" != "www" ]; then
-              echo "Moving files from $inner up to www/"
               shopt -s dotglob
               mv "$inner"/* www/
               rmdir "$inner" || true
             fi
           fi
-          echo "Contents of www:"
-          ls -la www | head -30
 
-      - name: Disable Steam plugin for Android
+      - name: Write ForceCanvas (Canvas renderer)
         run: |
-          if [ -f www/js/plugins.js ]; then
-            sed -i 's/{"name":"OrangeGreenworks","status":true/{"name":"OrangeGreenworks","status":false/' www/js/plugins.js || true
-            echo "OrangeGreenworks patched (if it was present)"
+          cat > www/js/plugins/ForceCanvas.js << 'JSEOF'
+          (() => {
+              "use strict";
+              if (typeof Graphics !== "undefined" && Graphics._createRenderer) {
+                  Graphics._createRenderer = function () {
+                      PIXI.dontSayHello = true;
+                      return new PIXI.CanvasRenderer(this._width, this._height, {
+                          view: this._canvas
+                      });
+                  };
+                  console.log("[ForceCanvas] Canvas renderer forced");
+              }
+          })();
+          JSEOF
+
+      - name: Write VirtualControls plugin
+        run: |
+          cat > www/js/plugins/VirtualControls.js << 'JSEOF'
+          (() => {
+              "use strict";
+              const CFG = { dpadSize: 150, dpadMargin: 20, btnSize: 68, btnMargin: 20, btnGap: 12, opacity: 0.45 };
+              let root = null;
+              function setKey(key, on) {
+                  if (key === "menu") {
+                      if (on && SceneManager._scene instanceof Scene_Map && !$gameMessage.isBusy()) {
+                          SceneManager._scene.callMenu();
+                      }
+                      return;
+                  }
+                  Input._currentState[key] = on;
+                  if (on) { Input._latestButton = key; Input._pressedTime = 0; }
+              }
+              function makeEl(id, label, style) {
+                  const el = document.createElement("div");
+                  el.textContent = label;
+                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:Arial,sans-serif;font-weight:bold;color:#fff;z-index:99999;border-radius:50%;" + style;
+                  const start = (e) => { e.preventDefault(); e.stopPropagation(); setKey(id, true); };
+                  const end = (e) => { if (e) { e.preventDefault(); e.stopPropagation(); } setKey(id, false); };
+                  el.addEventListener("touchstart", start, { passive: false });
+                  el.addEventListener("touchend", end, { passive: false });
+                  el.addEventListener("touchcancel", end);
+                  el.addEventListener("mousedown", start);
+                  el.addEventListener("mouseup", end);
+                  el.addEventListener("mouseleave", end);
+                  return el;
+              }
+              function build() {
+                  if (root) return;
+                  root = document.createElement("div");
+                  root.id = "vc-root";
+                  document.body.appendChild(root);
+                  const vw = innerWidth, vh = innerHeight;
+                  const ds = CFG.dpadSize, dm = CFG.dpadMargin;
+                  const as = ds / 3, dx = dm, dy = vh - ds - dm;
+                  const arrowStyle = "background:rgba(255,255,255," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);border-radius:10px;font-size:24px;";
+                  const add = (id, label, left, top, size, style) => {
+                      const el = makeEl(id, label, style + "left:" + left + "px;top:" + top + "px;width:" + size + "px;height:" + size + "px;");
+                      root.appendChild(el);
+                  };
+                  add("up", "▲", dx + as, dy, as, arrowStyle);
+                  add("down", "▼", dx + as, dy + as * 2, as, arrowStyle);
+                  add("left", "◀", dx, dy + as, as, arrowStyle);
+                  add("right", "▶", dx + as * 2, dy + as, as, arrowStyle);
+                  const bs = CFG.btnSize, bm = CFG.btnMargin, bg = CFG.btnGap;
+                  const okStyle = "background:rgba(80,200,80," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);font-size:22px;";
+                  const cancelStyle = "background:rgba(200,80,80," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);font-size:22px;";
+                  const menuStyle = "background:rgba(80,80,200," + CFG.opacity + ");border:2px solid rgba(255,255,255,0.8);font-size:26px;";
+                  add("ok", "OK", vw - bm - bs, vh - bm - bs, bs, okStyle);
+                  add("cancel", "X", vw - bm - bs * 2 - bg, vh - bm - bs, bs, cancelStyle);
+                  add("menu", "≡", vw - bm - bs, vh - bm - bs * 2 - bg, bs, menuStyle);
+                  console.log("[VirtualControls] ready");
+              }
+              window.addEventListener("load", () => setTimeout(build, 200));
+              let rt = null;
+              window.addEventListener("resize", () => {
+                  clearTimeout(rt);
+                  rt = setTimeout(() => { if (root) { root.remove(); root = null; } build(); }, 300);
+              });
+          })();
+          JSEOF
+
+      - name: Patch plugins.js
+        run: |
+          if ! grep -q '"ForceCanvas"' www/js/plugins.js; then
+            sed -i 's|^\[$|[{"name":"ForceCanvas","status":true,"description":"","parameters":{}},|' www/js/plugins.js
           fi
+          if ! grep -q '"VirtualControls"' www/js/plugins.js; then
+            sed -i 's|^];$|,{"name":"VirtualControls","status":true,"description":"","parameters":{}}];|' www/js/plugins.js
+          fi
+          sed -i 's/{"name":"OrangeGreenworks","status":true/{"name":"OrangeGreenworks","status":false/' www/js/plugins.js
+          echo "=== Last 3 lines of plugins.js ==="
+          tail -3 www/js/plugins.js
 
       - name: Install Capacitor
         run: |
@@ -59,15 +132,13 @@ jobs:
           npm install @capacitor/core @capacitor/cli @capacitor/android
 
       - name: Init Capacitor
-        run: |
-          npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
+        run: npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
 
       - name: Add Android platform
         run: npx cap add android
 
       - name: Patch Android manifest
-        run: |
-          sed -i 's/<application/<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml || true
+        run: sed -i 's/<application/<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml || true
 
       - name: Build APK
         run: |
