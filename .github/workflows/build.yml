@@ -29,35 +29,51 @@ jobs:
               rmdir "$inner" || true
             fi
           fi
-          ls www | head
 
-      - name: Write ForceCanvas plugin
+      - name: Patch rpg_core.js to force Canvas renderer
         run: |
-          cat > www/js/plugins/ForceCanvas.js <<'EOF'
-          (() => {
-              "use strict";
-              if (typeof Graphics !== "undefined" && Graphics._createRenderer) {
-                  Graphics._createRenderer = function () {
-                      PIXI.dontSayHello = true;
-                      try {
-                          const r = new PIXI.CanvasRenderer(this._width, this._height, { view: this._canvas });
-                          console.log("[ForceCanvas] Canvas OK");
-                          return r;
-                      } catch (e) {
-                          console.error("[ForceCanvas] Canvas failed:", e);
-                          return new PIXI.Renderer(this._width, this._height, { view: this._canvas });
-                      }
-                  };
-              }
-          })();
-          EOF
+          python3 - <<'PYEOF'
+          p = 'www/js/rpg_core.js'
+          c = open(p, encoding='utf-8').read()
+          orig = c
+
+          # 1. Force rendererType = canvas
+          c = c.replace("this._rendererType = type || 'auto';",
+                        "this._rendererType = 'canvas';")
+
+          # 2. Replace autoDetectRenderer with CanvasRenderer (in _createRenderer default branch)
+          c = c.replace("this._renderer = PIXI.autoDetectRenderer(width, height, options);",
+                        "this._renderer = new PIXI.CanvasRenderer(width, height, options);")
+
+          # 3. Also patch the catch fallback to ensure Canvas
+          c = c.replace(
+              "catch (e) {\n            this._renderer = new PIXI.CanvasRenderer(width, height, options);\n        }",
+              "catch (e) {\n            console.error('[rpg_core patch] renderer failed:', e);\n            this._renderer = new PIXI.CanvasRenderer(width, height, options);\n        }")
+
+          open(p, 'w', encoding='utf-8').write(c)
+          print('rpg_core changed:', c != orig)
+          print('rendererType=canvas present:', "this._rendererType = 'canvas';" in c)
+          print('CanvasRenderer in default branch:', 'this._renderer = new PIXI.CanvasRenderer(width, height, options);' in c)
+          PYEOF
+
+      - name: Disable PixelateImageRendering in VisuStella CoreEngine
+        run: |
+          python3 - <<'PYEOF'
+          p = 'www/js/plugins.js'
+          c = open(p, encoding='utf-8').read()
+          orig = c
+          c = c.replace('"PixelateImageRendering:eval":"true"',
+                        '"PixelateImageRendering:eval":"false"')
+          open(p, 'w', encoding='utf-8').write(c)
+          print('PixelateImageRendering disabled:', c != orig)
+          PYEOF
 
       - name: Write VirtualControls plugin
         run: |
           cat > www/js/plugins/VirtualControls.js <<'EOF'
           (() => {
               "use strict";
-              const CFG = { dpadSize: 150, dpadMargin: 30, btnSize: 68, btnMargin: 70, btnGap: 14, opacity: 0.45 };
+              const CFG = { dpadSize: 150, dpadMargin: 30, btnSize: 68, btnMargin: 40, btnGap: 14, opacity: 0.45 };
               let root = null;
               function setKey(key, on) {
                   if (key === "menu") {
@@ -120,16 +136,12 @@ jobs:
           })();
           EOF
 
-      - name: Patch plugins.js
+      - name: Patch plugins.js (enable VirtualControls, disable Greenworks)
         run: |
           python3 - <<'PYEOF'
           import re
-          with open('www/js/plugins.js', 'r', encoding='utf-8') as f:
-              c = f.read()
-          if '"ForceCanvas"' not in c:
-              c = re.sub(r'(\$plugins\s*=\s*)\[', r'\1[{"name":"ForceCanvas","status":true,"description":"","parameters":{}},', c, count=1)
-          else:
-              c = re.sub(r'("name"\s*:\s*"ForceCanvas"\s*,\s*"status"\s*:\s*)false', r'\1true', c)
+          p = 'www/js/plugins.js'
+          c = open(p, encoding='utf-8').read()
           if '"VirtualControls"' not in c:
               i = c.rfind('];')
               if i != -1:
@@ -137,9 +149,8 @@ jobs:
           else:
               c = re.sub(r'("name"\s*:\s*"VirtualControls"\s*,\s*"status"\s*:\s*)false', r'\1true', c)
           c = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true', r'\1false', c)
-          with open('www/js/plugins.js', 'w', encoding='utf-8') as f:
-              f.write(c)
-          for n in ["ForceCanvas","VirtualControls","OrangeGreenworks"]:
+          open(p, 'w', encoding='utf-8').write(c)
+          for n in ("VirtualControls", "OrangeGreenworks"):
               m = re.search(r'"name"\s*:\s*"' + n + r'"\s*,\s*"status"\s*:\s*(\w+)', c)
               print(n + ": " + (m.group(1) if m else "NOT FOUND"))
           PYEOF
@@ -154,10 +165,12 @@ jobs:
           npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
           npx cap add android
 
-      - name: Patch Android
+      - name: Patch Android (landscape + modern fullscreen + immersive)
         run: |
           python3 - <<'PYEOF'
           import re, glob
+
+          # --- Manifest: cleartext + landscape ---
           p = 'android/app/src/main/AndroidManifest.xml'
           m = open(p, encoding='utf-8').read()
           if 'usesCleartextTraffic' not in m:
@@ -167,57 +180,80 @@ jobs:
           open(p, 'w', encoding='utf-8').write(m)
           print('manifest done')
 
+          # --- styles.xml: fullscreen in every style + edge-to-edge ---
           p = 'android/app/src/main/res/values/styles.xml'
           s = open(p, encoding='utf-8').read()
           def fix(mt):
               b = mt.group(0)
               if 'windowFullscreen' in b:
                   return b
-              return b.replace('</style>', '    <item name="android:windowFullscreen">true</item>\n    <item name="android:windowContentOverlay">@null</item>\n    <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>\n</style>')
+              items = (
+                  '    <item name="android:windowFullscreen">true</item>\n'
+                  '    <item name="android:windowContentOverlay">@null</item>\n'
+                  '    <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>\n'
+                  '    <item name="android:windowTranslucentStatus">true</item>\n'
+                  '    <item name="android:windowTranslucentNavigation">true</item>\n'
+                  '    <item name="android:windowDrawsSystemBarBackgrounds">true</item>\n'
+              )
+              return b.replace('</style>', items + '</style>')
           s = re.sub(r'<style\b[^>]*>.*?</style>', fix, s, flags=re.DOTALL)
           open(p, 'w', encoding='utf-8').write(s)
-          print('styles done')
+          print('styles: fullscreen in', s.count('windowFullscreen'), 'theme(s)')
+          print('styles preview:', s[:300].replace('\n',' '))
 
+          # --- MainActivity: modern WindowInsetsController ---
           paths = glob.glob('android/app/src/main/java/**/MainActivity.java', recursive=True)
           if paths:
               p = paths[0]
               old = open(p, encoding='utf-8').read()
               pm = re.search(r'package\s+([\w.]+);', old)
               pkg = pm.group(1) if pm else 'com.badbit.chblasters'
-              java = 'package ' + pkg + ';\n'
-              java += 'import android.os.Bundle;\n'
-              java += 'import android.view.View;\n'
-              java += 'import android.view.WindowManager;\n'
-              java += 'import com.getcapacitor.BridgeActivity;\n\n'
-              java += 'public class MainActivity extends BridgeActivity {\n'
-              java += '    @Override\n'
-              java += '    public void onCreate(Bundle s) {\n'
-              java += '        super.onCreate(s);\n'
-              java += '        getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);\n'
-              java += '        hide();\n'
-              java += '    }\n'
-              java += '    @Override\n'
-              java += '    public void onResume() {\n'
-              java += '        super.onResume();\n'
-              java += '        hide();\n'
-              java += '    }\n'
-              java += '    @Override\n'
-              java += '    public void onWindowFocusChanged(boolean has) {\n'
-              java += '        super.onWindowFocusChanged(has);\n'
-              java += '        if (has) hide();\n'
-              java += '    }\n'
-              java += '    private void hide() {\n'
-              java += '        getWindow().getDecorView().setSystemUiVisibility(\n'
-              java += '            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY\n'
-              java += '            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE\n'
-              java += '            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION\n'
-              java += '            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN\n'
-              java += '            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION\n'
-              java += '            | View.SYSTEM_UI_FLAG_FULLSCREEN);\n'
-              java += '    }\n'
-              java += '}\n'
+              java = (
+                'package ' + pkg + ';\n\n'
+                'import android.os.Build;\n'
+                'import android.os.Bundle;\n'
+                'import android.view.View;\n'
+                'import android.view.WindowInsets;\n'
+                'import android.view.WindowInsetsController;\n'
+                'import android.view.WindowManager;\n'
+                'import com.getcapacitor.BridgeActivity;\n\n'
+                'public class MainActivity extends BridgeActivity {\n'
+                '    @Override\n'
+                '    public void onCreate(Bundle s) {\n'
+                '        super.onCreate(s);\n'
+                '        goFullscreen();\n'
+                '    }\n\n'
+                '    @Override\n'
+                '    public void onResume() {\n'
+                '        super.onResume();\n'
+                '        goFullscreen();\n'
+                '    }\n\n'
+                '    @Override\n'
+                '    public void onWindowFocusChanged(boolean has) {\n'
+                '        super.onWindowFocusChanged(has);\n'
+                '        if (has) goFullscreen();\n'
+                '    }\n\n'
+                '    private void goFullscreen() {\n'
+                '        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);\n'
+                '        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {\n'
+                '            WindowInsetsController c = getWindow().getInsetsController();\n'
+                '            if (c != null) {\n'
+                '                c.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());\n'
+                '                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);\n'
+                '            }\n'
+                '        }\n'
+                '        getWindow().getDecorView().setSystemUiVisibility(\n'
+                '            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY\n'
+                '            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE\n'
+                '            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION\n'
+                '            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN\n'
+                '            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION\n'
+                '            | View.SYSTEM_UI_FLAG_FULLSCREEN);\n'
+                '    }\n'
+                '}\n'
+              )
               open(p, 'w', encoding='utf-8').write(java)
-              print('MainActivity done')
+              print('MainActivity rewritten:', p)
           PYEOF
 
       - name: Build
