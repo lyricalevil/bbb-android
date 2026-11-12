@@ -24,7 +24,7 @@ jobs:
           ls www/icon/ 2>&1 || true
           file www/icon/icon.png 2>&1 || true
 
-      - name: Write ForceCanvas v7 (NEAREST + letterbox + optional speed x2)
+      - name: Write ForceCanvas v7 (NEAREST + letterbox + speed x2)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
@@ -34,7 +34,6 @@ jobs:
               function err(m) { console.error("[FC] " + m); }
               log("v7 loaded");
 
-              // --- NEAREST settings ---
               try { PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST; } catch (e) {}
               try { PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
               try { PIXI.settings.ROUND_PIXELS = true; } catch (e) {}
@@ -45,7 +44,6 @@ jobs:
                   }
               } catch (e) {}
 
-              // --- Bitmap patch ---
               try {
                   if (typeof Bitmap !== "undefined" && Bitmap.prototype._createBaseTexture) {
                       const orig = Bitmap.prototype._createBaseTexture;
@@ -57,7 +55,6 @@ jobs:
                   }
               } catch (e) { err("Bitmap: " + e); }
 
-              // --- Retrofit textures ---
               function retrofit() {
                   try {
                       const cache = PIXI.utils.TextureCache;
@@ -75,7 +72,6 @@ jobs:
               setTimeout(retrofit, 3000);
               setTimeout(retrofit, 6000);
 
-              // --- Letterbox: canvas fills viewport, keeps aspect ---
               function fixLayout() {
                   const c = Graphics._canvas;
                   if (!c) return;
@@ -101,19 +97,15 @@ jobs:
                           fixLayout();
                       };
                   }
-              } catch (e) { err("updateCanvas patch: " + e); }
+              } catch (e) { err("updateCanvas: " + e); }
               window.addEventListener("resize", fixLayout);
               setTimeout(fixLayout, 100);
               setTimeout(fixLayout, 1000);
 
-              // --- Speed x2 (optional, reads localStorage) ---
               function readSpeed() {
                   try {
                       const raw = localStorage.getItem("vc_cfg");
-                      if (raw) {
-                          const c = JSON.parse(raw);
-                          return c.speedX2 === true;
-                      }
+                      if (raw) return JSON.parse(raw).speedX2 === true;
                   } catch (e) {}
                   return false;
               }
@@ -136,10 +128,9 @@ jobs:
                       if (skipInput > 0) return;
                       origUpdateInput();
                   };
-                  log("speed x2 hook installed");
+                  log("speed hook installed");
               } catch (e) { err("speed hook: " + e); }
 
-              // --- Indicator ---
               window.addEventListener("load", () => {
                   setTimeout(() => {
                       try {
@@ -161,45 +152,33 @@ jobs:
           })();
           EOF
 
-      - name: Write VirtualControls v2 (settings panel, drag, custom buttons)
+      - name: Write VirtualControls v2 (settings panel)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/VirtualControls.js" <<'EOF'
           (() => {
               "use strict";
-
-              const DEFAULT = {
-                  opacity: 0.45,
-                  scale: 1.0,
-                  color: "#ffffff",
-                  hideInMenu: false,
-                  speedX2: false,
-                  positions: null  // null = default layout; otherwise {up,down,left,right,ok,no,mnu:{x,y}} in vw/vh percent
-              };
-
+              const DEFAULT = { opacity: 0.45, scale: 1.0, color: "#ffffff", hideInMenu: false, speedX2: false, positions: null };
               function loadCfg() {
                   try {
                       const raw = localStorage.getItem("vc_cfg");
-                      if (raw) {
-                          const p = JSON.parse(raw);
-                          return Object.assign({}, DEFAULT, p);
-                      }
+                      if (raw) return Object.assign({}, DEFAULT, JSON.parse(raw));
                   } catch (e) {}
                   return Object.assign({}, DEFAULT);
               }
               function saveCfg() {
                   try { localStorage.setItem("vc_cfg", JSON.stringify(CFG)); } catch (e) {}
               }
-
               let CFG = loadCfg();
               let root = null;
               let editMode = false;
               let panelOpen = false;
               let buttons = {};
+              let settingsBtn = null;
+              let panel = null;
 
               if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2);
 
-              // --- StatusBar hide ---
               function tryHideStatusBar() {
                   try {
                       if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar) {
@@ -213,7 +192,6 @@ jobs:
               setTimeout(tryHideStatusBar, 2000);
               setTimeout(tryHideStatusBar, 5000);
 
-              // --- Input helper ---
               function setKey(key, on) {
                   if (key === "mnu") {
                       if (on && SceneManager._scene instanceof Scene_Map && !$gameMessage.isBusy()) {
@@ -222,24 +200,16 @@ jobs:
                       return;
                   }
                   const map = { ok: "ok", no: "cancel", up: "up", down: "down", left: "left", right: "right" };
-                  const inputKey = map[key];
-                  if (!inputKey) return;
-                  Input._currentState[inputKey] = on;
-                  if (on) {
-                      Input._latestButton = inputKey;
-                      Input._pressedTime = 0;
-                  }
+                  const ik = map[key];
+                  if (!ik) return;
+                  Input._currentState[ik] = on;
+                  if (on) { Input._latestButton = ik; Input._pressedTime = 0; }
               }
 
-              // --- Color helpers ---
               function parseColor(hex) {
                   hex = hex.replace('#', '');
                   if (hex.length === 3) hex = hex.split('').map(c => c+c).join('');
-                  return {
-                      r: parseInt(hex.slice(0,2),16),
-                      g: parseInt(hex.slice(2,4),16),
-                      b: parseInt(hex.slice(4,6),16)
-                  };
+                  return { r: parseInt(hex.slice(0,2),16), g: parseInt(hex.slice(2,4),16), b: parseInt(hex.slice(4,6),16) };
               }
               function bgRgba(hex, a) {
                   const c = parseColor(hex);
@@ -250,13 +220,11 @@ jobs:
                   return (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150;
               }
 
-              // --- Element creation ---
-              function makeButton(id, label, size, circular) {
+              function makeButton(id, label, baseSize, circular) {
                   const el = document.createElement("div");
                   el.textContent = label;
                   el.dataset.vcid = id;
-                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:'Courier New',monospace;font-weight:bold;z-index:2147483646;border-radius:" + (circular ? "50%" : "10px") + ";transition:none;";
-                  updateButtonStyle(el, id, size);
+                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:'Courier New',monospace;font-weight:bold;z-index:2147483646;border-radius:" + (circular ? "50%" : "10px") + ";";
                   const start = (e) => {
                       e.preventDefault(); e.stopPropagation();
                       if (editMode) { startDrag(e, el, id); return; }
@@ -275,6 +243,7 @@ jobs:
                   el.addEventListener("mouseleave", end);
                   return el;
               }
+
               function updateButtonStyle(el, id, baseSize) {
                   const sz = Math.round(baseSize * CFG.scale);
                   el.style.width = sz + "px";
@@ -283,74 +252,48 @@ jobs:
                   el.style.border = "2px solid " + bgRgba(CFG.color, Math.min(1, CFG.opacity + 0.3));
                   el.style.color = isLight(CFG.color) ? "#000" : "#fff";
                   el.style.fontSize = Math.round(sz * 0.35) + "px";
-                  if (editMode) {
-                      el.style.outline = "2px dashed #ff0";
-                  } else {
-                      el.style.outline = "none";
-                  }
+                  el.style.outline = editMode ? "2px dashed #ff0" : "none";
               }
 
-              // --- Drag & drop ---
               let dragState = null;
               function startDrag(e, el, id) {
                   const t = (e.touches && e.touches[0]) || e;
                   const rect = el.getBoundingClientRect();
-                  dragState = {
-                      el: el, id: id,
-                      offsetX: t.clientX - rect.left,
-                      offsetY: t.clientY - rect.top
-                  };
+                  dragState = { el: el, id: id, offsetX: t.clientX - rect.left, offsetY: t.clientY - rect.top };
                   e.preventDefault();
               }
               document.addEventListener("touchmove", (e) => {
                   if (!dragState) return;
                   const t = e.touches[0];
-                  const x = t.clientX - dragState.offsetX;
-                  const y = t.clientY - dragState.offsetY;
-                  dragState.el.style.left = x + "px";
-                  dragState.el.style.top = y + "px";
+                  dragState.el.style.left = (t.clientX - dragState.offsetX) + "px";
+                  dragState.el.style.top = (t.clientY - dragState.offsetY) + "px";
                   e.preventDefault();
               }, { passive: false });
               document.addEventListener("mousemove", (e) => {
                   if (!dragState) return;
-                  const x = e.clientX - dragState.offsetX;
-                  const y = e.clientY - dragState.offsetY;
-                  dragState.el.style.left = x + "px";
-                  dragState.el.style.top = y + "px";
+                  dragState.el.style.left = (e.clientX - dragState.offsetX) + "px";
+                  dragState.el.style.top = (e.clientY - dragState.offsetY) + "px";
               });
               function endDrag() {
                   if (!dragState) return;
-                  const el = dragState.el;
-                  const id = dragState.id;
-                  const rect = el.getBoundingClientRect();
-                  const pct = {
-                      x: rect.left / innerWidth * 100,
-                      y: rect.top / innerHeight * 100
-                  };
+                  const rect = dragState.el.getBoundingClientRect();
+                  const pct = { x: rect.left / innerWidth * 100, y: rect.top / innerHeight * 100 };
                   if (!CFG.positions) CFG.positions = {};
-                  CFG.positions[id] = pct;
+                  CFG.positions[dragState.id] = pct;
                   saveCfg();
                   dragState = null;
               }
               document.addEventListener("touchend", endDrag);
               document.addEventListener("mouseup", endDrag);
 
-              // --- Layout calculation ---
               function getPos(id) {
-                  if (CFG.positions && CFG.positions[id]) {
-                      return CFG.positions[id];
-                  }
-                  // defaults
-                  const vw = 100, vh = 100;
-                  const dpad = 150 * CFG.scale;
-                  const btn = 68 * CFG.scale;
+                  if (CFG.positions && CFG.positions[id]) return CFG.positions[id];
+                  const dpad = 150;
+                  const as = dpad / 3;
                   const margin = 30;
-                  const dpadSize = 150;
-                  const as = dpadSize / 3;
-                  const ds = dpadSize;
-                  const base = { left: margin, top: vh - (ds + margin) / innerHeight * 100 };
+                  const btn = 68;
                   const baseL = margin / innerWidth * 100;
-                  const baseT = (innerHeight - (ds + margin)) / innerHeight * 100;
+                  const baseT = (innerHeight - (dpad + margin)) / innerHeight * 100;
                   const asL = as / innerWidth * 100;
                   const asT = as / innerHeight * 100;
                   const btnL = (innerWidth - margin - btn) / innerWidth * 100;
@@ -373,15 +316,11 @@ jobs:
                   el.style.top = p.y + "%";
               }
 
-              // --- Show/hide logic ---
               function shouldShowFull() {
                   const s = SceneManager._scene;
                   if (!s) return false;
                   if (s instanceof Scene_Battle) return true;
-                  if (s instanceof Scene_Map) {
-                      return !$gameMessage.isBusy();
-                  }
-                  // Menu, Title, Shop, etc.
+                  if (s instanceof Scene_Map) return !$gameMessage.isBusy();
                   return !CFG.hideInMenu;
               }
               function updateVisibility() {
@@ -389,10 +328,8 @@ jobs:
                   const full = shouldShowFull();
                   ["up","down","left","right","no","mnu"].forEach(id => {
                       const el = buttons[id];
-                      if (!el) return;
-                      el.style.display = full ? "flex" : "none";
+                      if (el) el.style.display = full ? "flex" : "none";
                   });
-                  // OK всегда видна, кроме message (там скрываем чтобы не мешала)
                   const okEl = buttons["ok"];
                   if (okEl) {
                       const s = SceneManager._scene;
@@ -401,12 +338,9 @@ jobs:
                   }
               }
 
-              // --- Settings panel ---
               function buildPanel() {
                   const p = document.createElement("div");
-                  p.id = "vc-panel";
                   p.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(90vw,500px);max-height:85vh;overflow-y:auto;background:rgba(20,20,30,0.95);color:#fff;font-family:Arial,sans-serif;padding:20px;border-radius:12px;z-index:2147483647;box-shadow:0 4px 20px rgba(0,0,0,0.8);display:none;";
-
                   const title = document.createElement("div");
                   title.textContent = "Настройки управления";
                   title.style.cssText = "font-size:20px;font-weight:bold;margin-bottom:16px;text-align:center;";
@@ -418,79 +352,59 @@ jobs:
                       const l = document.createElement("div");
                       l.textContent = label;
                       l.style.cssText = "flex:0 0 140px;font-size:14px;";
-                      r.appendChild(l);
-                      r.appendChild(control);
-                      p.appendChild(r);
+                      r.appendChild(l); r.appendChild(control); p.appendChild(r);
                   }
 
-                  // opacity
                   const opIn = document.createElement("input");
                   opIn.type = "range"; opIn.min = "10"; opIn.max = "100"; opIn.step = "5";
-                  opIn.value = Math.round(CFG.opacity * 100);
-                  opIn.style.flex = "1";
+                  opIn.value = Math.round(CFG.opacity * 100); opIn.style.flex = "1";
                   opIn.oninput = () => { CFG.opacity = parseInt(opIn.value) / 100; saveCfg(); applyStyles(); };
                   row("Прозрачность", opIn);
 
-                  // scale
                   const scIn = document.createElement("input");
                   scIn.type = "range"; scIn.min = "60"; scIn.max = "150"; scIn.step = "5";
-                  scIn.value = Math.round(CFG.scale * 100);
-                  scIn.style.flex = "1";
+                  scIn.value = Math.round(CFG.scale * 100); scIn.style.flex = "1";
                   scIn.oninput = () => { CFG.scale = parseInt(scIn.value) / 100; saveCfg(); applyStyles(); applyAllPositions(); };
                   row("Размер", scIn);
 
-                  // color
-                  const colorWrap = document.createElement("div");
-                  colorWrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
-                  const colors = [
+                  const cw = document.createElement("div");
+                  cw.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
+                  [
                       { name: "Белый", hex: "#ffffff" },
                       { name: "Чёрный", hex: "#202020" },
                       { name: "Красный", hex: "#d04040" },
                       { name: "Синий", hex: "#4060d0" },
                       { name: "Зелёный", hex: "#40a040" },
                       { name: "Жёлтый", hex: "#d0a020" }
-                  ];
-                  colors.forEach(c => {
+                  ].forEach(c => {
                       const cb = document.createElement("div");
                       cb.style.cssText = "width:34px;height:34px;border-radius:50%;background:" + c.hex + ";cursor:pointer;border:3px solid " + (CFG.color === c.hex ? "#fff" : "transparent") + ";";
                       cb.title = c.name;
                       cb.onclick = () => {
-                          CFG.color = c.hex;
-                          saveCfg();
-                          applyStyles();
-                          Array.from(colorWrap.children).forEach(ch => ch.style.border = "3px solid transparent");
+                          CFG.color = c.hex; saveCfg(); applyStyles();
+                          Array.from(cw.children).forEach(ch => ch.style.border = "3px solid transparent");
                           cb.style.border = "3px solid #fff";
                       };
-                      colorWrap.appendChild(cb);
+                      cw.appendChild(cb);
                   });
-                  row("Цвет", colorWrap);
+                  row("Цвет", cw);
 
-                  // hideInMenu toggle
-                  const hiBtn = document.createElement("button");
-                  hiBtn.textContent = CFG.hideInMenu ? "ВКЛ" : "ВЫКЛ";
-                  hiBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (CFG.hideInMenu ? "#40a040" : "#606060") + ";color:#fff;font-size:14px;";
-                  hiBtn.onclick = () => {
-                      CFG.hideInMenu = !CFG.hideInMenu;
-                      saveCfg();
-                      hiBtn.textContent = CFG.hideInMenu ? "ВКЛ" : "ВЫКЛ";
-                      hiBtn.style.background = CFG.hideInMenu ? "#40a040" : "#606060";
-                  };
-                  row("Скрывать в меню", hiBtn);
+                  function toggle(label, key, onChange) {
+                      const b = document.createElement("button");
+                      b.textContent = CFG[key] ? "ВКЛ" : "ВЫКЛ";
+                      b.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (CFG[key] ? "#40a040" : "#606060") + ";color:#fff;font-size:14px;";
+                      b.onclick = () => {
+                          CFG[key] = !CFG[key]; saveCfg();
+                          b.textContent = CFG[key] ? "ВКЛ" : "ВЫКЛ";
+                          b.style.background = CFG[key] ? "#40a040" : "#606060";
+                          if (onChange) onChange();
+                      };
+                      row(label, b);
+                      return b;
+                  }
+                  toggle("Скрывать в меню", "hideInMenu");
+                  toggle("Ускорение x2", "speedX2", () => { if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2); });
 
-                  // speed x2
-                  const spBtn = document.createElement("button");
-                  spBtn.textContent = CFG.speedX2 ? "ВКЛ" : "ВЫКЛ";
-                  spBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (CFG.speedX2 ? "#40a040" : "#606060") + ";color:#fff;font-size:14px;";
-                  spBtn.onclick = () => {
-                      CFG.speedX2 = !CFG.speedX2;
-                      saveCfg();
-                      spBtn.textContent = CFG.speedX2 ? "ВКЛ" : "ВЫКЛ";
-                      spBtn.style.background = CFG.speedX2 ? "#40a040" : "#606060";
-                      if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2);
-                  };
-                  row("Ускорение x2", spBtn);
-
-                  // edit mode
                   const edBtn = document.createElement("button");
                   edBtn.textContent = editMode ? "ГОТОВО" : "РАССТАВИТЬ";
                   edBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:" + (editMode ? "#d0a020" : "#4060d0") + ";color:#fff;font-size:14px;";
@@ -502,7 +416,6 @@ jobs:
                   };
                   row("Позиции кнопок", edBtn);
 
-                  // reset
                   const rsBtn = document.createElement("button");
                   rsBtn.textContent = "СБРОС";
                   rsBtn.style.cssText = "padding:6px 16px;border:none;border-radius:6px;cursor:pointer;background:#a02020;color:#fff;font-size:14px;";
@@ -515,7 +428,6 @@ jobs:
                   };
                   row("Сбросить всё", rsBtn);
 
-                  // close
                   const closeBtn = document.createElement("button");
                   closeBtn.textContent = "ЗАКРЫТЬ";
                   closeBtn.style.cssText = "width:100%;padding:10px;margin-top:8px;border:none;border-radius:6px;cursor:pointer;background:#404060;color:#fff;font-size:16px;font-weight:bold;";
@@ -525,7 +437,6 @@ jobs:
                   document.body.appendChild(p);
                   return p;
               }
-              let panel = null;
               function togglePanel() {
                   if (!panel) panel = buildPanel();
                   panelOpen = !panelOpen;
@@ -535,9 +446,7 @@ jobs:
               function applyStyles() {
                   if (!root) return;
                   const base = { up: 50, down: 50, left: 50, right: 50, ok: 68, no: 68, mnu: 68 };
-                  for (const id in buttons) {
-                      updateButtonStyle(buttons[id], id, base[id] || 68);
-                  }
+                  for (const id in buttons) updateButtonStyle(buttons[id], id, base[id] || 68);
                   if (settingsBtn) {
                       const s = 40;
                       settingsBtn.style.width = s + "px";
@@ -548,12 +457,8 @@ jobs:
                   }
               }
               function applyAllPositions() {
-                  for (const id in buttons) {
-                      applyPos(buttons[id], id);
-                  }
+                  for (const id in buttons) applyPos(buttons[id], id);
               }
-
-              let settingsBtn = null;
 
               function build() {
                   if (root) return;
@@ -561,30 +466,20 @@ jobs:
                   root.id = "vc-root";
                   root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646;";
                   document.body.appendChild(root);
-
-                  // D-pad (4 separate buttons)
                   buttons.up = makeButton("up", "▲", 50, false);
                   buttons.down = makeButton("down", "▼", 50, false);
                   buttons.left = makeButton("left", "◀", 50, false);
                   buttons.right = makeButton("right", "▶", 50, false);
-
-                  // action buttons
                   buttons.ok = makeButton("ok", "ok.", 68, true);
                   buttons.no = makeButton("no", "no.", 68, true);
                   buttons.mnu = makeButton("mnu", "mnu", 68, true);
-
-                  for (const id in buttons) {
-                      root.appendChild(buttons[id]);
-                  }
-
-                  // settings gear
+                  for (const id in buttons) root.appendChild(buttons[id]);
                   settingsBtn = document.createElement("div");
                   settingsBtn.textContent = "⚙";
                   settingsBtn.style.cssText = "position:fixed;top:8px;right:8px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;z-index:2147483646;font-family:Arial;font-weight:bold;user-select:none;-webkit-user-select:none;touch-action:none;";
                   settingsBtn.addEventListener("touchstart", (e) => { e.preventDefault(); e.stopPropagation(); togglePanel(); }, { passive: false });
                   settingsBtn.addEventListener("click", (e) => { e.preventDefault(); togglePanel(); });
                   root.appendChild(settingsBtn);
-
                   applyStyles();
                   applyAllPositions();
                   updateVisibility();
@@ -650,17 +545,45 @@ jobs:
           SRC=$(find www -name "icon.png" -path "*icon*" 2>/dev/null | head -1)
           if [ -z "$SRC" ]; then SRC=$(find www -name "icon.png" | head -1); fi
           echo "Icon source: $SRC"
-          file "$SRC"
-          # Remove adaptive icon so Android uses PNG directly
+          file "$SRC" 2>&1 || true
+
           rm -rf android/app/src/main/res/mipmap-anydpi-v26 2>/dev/null || true
-          for pair in "mdpi 48" "hdpi 72" "xhdpi 96" "xxhdpi 144" "xxxhdpi 192"; do
-            folder="${pair% *}"
-            size="${pair#* }"
-            convert "$SRC" -resize ${size}x${size} android/app/src/main/res/mipmap-${folder}/ic_launcher.png
-            convert "$SRC" -resize ${size}x${size} android/app/src/main/res/mipmap-${folder}/ic_launcher_round.png
-            echo "  -> mipmap-${folder} (${size}px)"
-          done
-          echo "Icons replaced."
+
+          python3 -m pip install --quiet Pillow
+
+          python3 - <<'PYEOF'
+          from PIL import Image
+          import os, glob
+
+          candidates = glob.glob("www/icon/icon.png") or glob.glob("www/**/icon.png", recursive=True)
+          if not candidates:
+              print("ERROR: icon.png not found anywhere")
+              raise SystemExit(1)
+          src = candidates[0]
+          print("Using:", src)
+
+          img = Image.open(src).convert("RGBA")
+          print("Source size:", img.size)
+
+          sizes = {
+              "mipmap-mdpi":    48,
+              "mipmap-hdpi":    72,
+              "mipmap-xhdpi":   96,
+              "mipmap-xxhdpi":  144,
+              "mipmap-xxxhdpi": 192,
+          }
+          res = "android/app/src/main/res"
+          for folder, size in sizes.items():
+              fp = os.path.join(res, folder)
+              os.makedirs(fp, exist_ok=True)
+              resized = img.resize((size, size), Image.LANCZOS)
+              p1 = os.path.join(fp, "ic_launcher.png")
+              p2 = os.path.join(fp, "ic_launcher_round.png")
+              resized.save(p1, "PNG")
+              resized.save(p2, "PNG")
+              print(f"  {folder}: {size}x{size} -> OK")
+          print("Icons replaced OK")
+          PYEOF
 
       - name: Patch Android
         run: |
