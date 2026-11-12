@@ -21,63 +21,109 @@ jobs:
           mkdir -p www
           wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
           unzip -q game.zip -d www
-          ls -la www/ | head -20
-          echo "=== js/ ==="
-          ls -la www/js/ 2>&1 | head -30
-          echo "=== _createRenderer in rmmz_core (for diagnostics) ==="
-          grep -n -A2 '_createRenderer\s*=' www/js/rmmz_core.js 2>&1 | head -20 || true
-          echo "=== autoDetect in rmmz_core ==="
-          grep -n 'autoDetect' www/js/rmmz_core.js 2>&1 | head -5 || true
+          echo "=== diagnostics: _createRenderer in rmmz_core ==="
+          grep -n "_createRenderer" www/js/rmmz_core.js 2>&1 | head -10 || true
+          echo "=== diagnostics: rendererType in rmmz_core ==="
+          grep -n "rendererType" www/js/rmmz_core.js 2>&1 | head -10 || true
+          echo "=== diagnostics: PIXI.Renderer usage in rmmz_core ==="
+          grep -n "PIXI.Renderer\|PIXI.autoDetectRenderer" www/js/rmmz_core.js 2>&1 | head -10 || true
+          echo "=== diagnostics: file size / line count ==="
+          wc -c www/js/rmmz_core.js
+          wc -l www/js/rmmz_core.js
 
-      - name: Write ForceCanvas (patch PIXI + Graphics, works in any MZ version)
+      - name: Write ForceCanvas v3 (aggressive override + visual indicator)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/ForceCanvas.js" <<'EOF'
           (() => {
               "use strict";
 
-              // 1) Override PIXI.autoDetectRenderer globally
-              try {
-                  if (typeof PIXI !== "undefined" && PIXI.autoDetectRenderer) {
-                      const orig = PIXI.autoDetectRenderer;
-                      PIXI.autoDetectRenderer = function (w, h, o) {
-                          try {
-                              console.log("[ForceCanvas] autoDetectRenderer -> CanvasRenderer");
-                              return new PIXI.CanvasRenderer(w, h, o);
-                          } catch (e) {
-                              console.error("[ForceCanvas] CanvasRenderer in autoDetect failed:", e);
-                              return orig.call(PIXI, w, h, o);
-                          }
-                      };
-                  }
-              } catch (e) { console.warn("[ForceCanvas] autoDetect patch failed:", e); }
+              function log(m) { console.log("[ForceCanvas] " + m); }
+              function err(m) { console.error("[ForceCanvas] " + m); }
 
-              // 2) Override Graphics._createRenderer — fires after all plugins
+              log("Plugin loaded. PIXI version: " + (PIXI.VERSION || "?"));
+              log("PIXI.Renderer: " + typeof PIXI.Renderer);
+              log("PIXI.CanvasRenderer: " + typeof PIXI.CanvasRenderer);
+              log("PIXI.autoDetectRenderer: " + typeof PIXI.autoDetectRenderer);
+
+              // ---- 1) Override PIXI.Renderer constructor via getter ----
+              try {
+                  if (PIXI.CanvasRenderer) {
+                      const CanvasR = PIXI.CanvasRenderer;
+
+                      // Force factory function
+                      PIXI.Renderer = function (w, h, o) {
+                          log("PIXI.Renderer() intercepted -> CanvasRenderer");
+                          return new CanvasR(w, h, o);
+                      };
+
+                      if (PIXI.autoDetectRenderer) {
+                          PIXI.autoDetectRenderer = function (w, h, o) {
+                              log("autoDetectRenderer() intercepted -> CanvasRenderer");
+                              return new CanvasR(w, h, o);
+                          };
+                      }
+
+                      log("PIXI overrides installed");
+                  } else {
+                      err("PIXI.CanvasRenderer unavailable");
+                  }
+              } catch (e) { err("PIXI override failed: " + e); }
+
+              // ---- 2) Patch Graphics.initialize to force 'canvas' type early ----
+              try {
+                  if (typeof Graphics !== "undefined" && Graphics.initialize) {
+                      const origInit = Graphics.initialize;
+                      Graphics.initialize = function (width, height, type) {
+                          log("Graphics.initialize called with type=" + type + ", forcing canvas");
+                          return origInit.call(this, width, height, "canvas");
+                      };
+                      log("Graphics.initialize patched");
+                  }
+              } catch (e) { err("Graphics.initialize patch failed: " + e); }
+
+              // ---- 3) Patch Graphics._createRenderer as last resort ----
               try {
                   if (typeof Graphics !== "undefined") {
-                      const origCreate = Graphics._createRenderer;
+                      const orig = Graphics._createRenderer;
                       Graphics._createRenderer = function () {
                           PIXI.dontSayHello = true;
-                          const w = this._width;
-                          const h = this._height;
                           try {
-                              this._renderer = new PIXI.CanvasRenderer(w, h, { view: this._canvas });
-                              console.log("[ForceCanvas] _createRenderer -> CanvasRenderer, type =", this._renderer.type);
+                              this._renderer = new PIXI.CanvasRenderer(this._width, this._height, { view: this._canvas });
+                              log("_createRenderer -> Canvas, type=" + this._renderer.type);
                           } catch (e) {
-                              console.error("[ForceCanvas] _createRenderer Canvas failed:", e);
-                              if (origCreate) origCreate.call(this);
+                              err("_createRenderer Canvas failed: " + e);
+                              if (orig) orig.call(this);
                           }
                       };
-                      if (Graphics._rendererType !== undefined) {
-                          Graphics._rendererType = "canvas";
-                      }
-                      console.log("[ForceCanvas] plugin loaded, overrides installed");
+                      log("Graphics._createRenderer patched");
                   }
-              } catch (e) { console.error("[ForceCanvas] Graphics patch failed:", e); }
+              } catch (e) { err("_createRenderer patch failed: " + e); }
+
+              // ---- 4) Visual indicator (visible 15 sec after start) ----
+              window.addEventListener("load", () => {
+                  setTimeout(() => {
+                      try {
+                          const r = (typeof Graphics !== "undefined") ? Graphics._renderer : null;
+                          let typeStr = "none", color = "#a00";
+                          if (r) {
+                              if (r.type === 1) { typeStr = "Canvas"; color = "#0a0"; }
+                              else if (r.type === 2) { typeStr = "WebGL"; color = "#a00"; }
+                              else { typeStr = "type=" + r.type; color = "#a80"; }
+                          }
+                          const div = document.createElement("div");
+                          div.textContent = "R: " + typeStr;
+                          div.style.cssText = "position:fixed;top:8px;right:8px;padding:10px 18px;background:" + color + ";color:#fff;font-family:monospace;font-size:22px;font-weight:bold;z-index:2147483647;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.6);";
+                          document.body.appendChild(div);
+                          setTimeout(() => div.remove(), 15000);
+                          log("INDICATOR: " + typeStr);
+                      } catch (e) { err("indicator failed: " + e); }
+                  }, 2500);
+              });
           })();
           EOF
 
-      - name: Write VirtualControls plugin (with Capacitor StatusBar hide)
+      - name: Write VirtualControls plugin (with StatusBar hide)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/VirtualControls.js" <<'EOF'
@@ -85,15 +131,14 @@ jobs:
               "use strict";
               const CFG = { dpadSize: 150, dpadMargin: 30, btnSize: 68, btnMargin: 40, btnGap: 14, opacity: 0.45 };
               let root = null;
-
               function tryHideStatusBar() {
                   try {
                       if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar) {
                           window.Capacitor.Plugins.StatusBar.setOverlaysWebView({ overlay: true }).catch(()=>{});
                           window.Capacitor.Plugins.StatusBar.hide().catch(()=>{});
-                          console.log("[VirtualControls] StatusBar.hide called");
+                          console.log("[VC] StatusBar.hide called");
                       }
-                  } catch (e) { console.warn("[VirtualControls] StatusBar hide failed:", e); }
+                  } catch (e) { console.warn("[VC] StatusBar hide failed:", e); }
               }
               tryHideStatusBar();
               setTimeout(tryHideStatusBar, 500);
@@ -113,7 +158,7 @@ jobs:
               function makeEl(id, label, style) {
                   const el = document.createElement("div");
                   el.textContent = label;
-                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:Arial,sans-serif;font-weight:bold;color:#fff;z-index:2147483647;border-radius:50%;" + style;
+                  el.style.cssText = "position:fixed;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;font-family:Arial,sans-serif;font-weight:bold;color:#fff;z-index:2147483646;border-radius:50%;" + style;
                   const start = (e) => { e.preventDefault(); e.stopPropagation(); setKey(id, true); };
                   const end = (e) => { if (e) { e.preventDefault(); e.stopPropagation(); } setKey(id, false); };
                   el.addEventListener("touchstart", start, { passive: false });
@@ -128,7 +173,7 @@ jobs:
                   if (root) return;
                   root = document.createElement("div");
                   root.id = "vc-root";
-                  root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;";
+                  root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646;";
                   document.body.appendChild(root);
                   const vw = innerWidth, vh = innerHeight;
                   const ds = CFG.dpadSize, dm = CFG.dpadMargin;
@@ -161,38 +206,105 @@ jobs:
           })();
           EOF
 
-      - name: Patch plugins.js (ForceCanvas LAST, VirtualControls on, Greenworks off, Pixelate off)
+      - name: Patch plugins.js (dedupe ForceCanvas/VirtualControls, enable, add to end)
         run: |
           python3 - <<'PYEOF'
-          import re, glob
+          import re, glob, json
           p = glob.glob('www/**/plugins.js', recursive=True)[0]
           c = open(p, encoding='utf-8').read()
 
-          # Remove ALL existing ForceCanvas entries
-          c = re.sub(r',?\s*\{"name"\s*:\s*"ForceCanvas"[^}]*\}', '', c)
-          # Remove ALL existing VirtualControls entries
-          c = re.sub(r',?\s*\{"name"\s*:\s*"VirtualControls"[^}]*\}', '', c)
+          # Extract the plugins array as text between first [ after $plugins = and last ]
+          m = re.search(r'(\$plugins\s*=\s*)(\[.*\])(\s*;?)', c, re.DOTALL)
+          if not m:
+              print("ERROR: $plugins array not found")
+              raise SystemExit(1)
+          prefix = m.group(1)
+          arr_text = m.group(2)
+          suffix = m.group(3) or ';'
 
-          # Append both at end (ForceCanvas LAST so its overrides win over VisuStella)
-          i = c.rfind('];')
-          if i != -1:
-              c = c[:i] + ',{"name":"VirtualControls","status":true,"description":"","parameters":{}}' \
-                          + ',{"name":"ForceCanvas","status":true,"description":"","parameters":{}}' + c[i:]
+          # Try to parse as JSON
+          try:
+              plugins = json.loads(arr_text)
+              print("Parsed as JSON, {} entries".format(len(plugins)))
+          except Exception as e:
+              print("JSON parse failed: {}".format(e))
+              print("Falling back to regex removal")
+              # Remove all ForceCanvas and VirtualControls entries via balanced braces
+              def remove_plugin(text, name):
+                  result = text
+                  search = '"name": "{}"'.format(name)
+                  search2 = '"name":"{}"'.format(name)
+                  while True:
+                      idx = result.find(search)
+                      if idx == -1: idx = result.find(search2)
+                      if idx == -1: break
+                      # Find start {
+                      start = result.rfind('{', 0, idx)
+                      if start == -1: break
+                      # Find matching } with depth
+                      depth = 0
+                      end = -1
+                      for i in range(start, len(result)):
+                          if result[i] == '{': depth += 1
+                          elif result[i] == '}':
+                              depth -= 1
+                              if depth == 0:
+                                  end = i
+                                  break
+                      if end == -1: break
+                      # Remove trailing comma
+                      after = end + 1
+                      while after < len(result) and result[after] in ' \t\n\r': after += 1
+                      if after < len(result) and result[after] == ',':
+                          end = after
+                      result = result[:start] + result[end+1:]
+                  return result
+              arr_text = remove_plugin(arr_text, 'ForceCanvas')
+              arr_text = remove_plugin(arr_text, 'VirtualControls')
+              # Add back at end
+              arr_text = arr_text.rstrip()
+              if arr_text.endswith(']'):
+                  arr_text = arr_text[:-1].rstrip()
+                  if not arr_text.endswith(','): arr_text += ','
+                  arr_text += '{"name":"VirtualControls","status":true,"description":"","parameters":{}},'
+                  arr_text += '{"name":"ForceCanvas","status":true,"description":"","parameters":{}}]'
+              # Disable Greenworks, Pixelate
+              arr_text = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true', r'\1false', arr_text)
+              arr_text = arr_text.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
+              c = prefix + arr_text + suffix
+              open(p, 'w', encoding='utf-8').write(c)
+              print("Regex path: ForceCanvas and VirtualControls removed and re-added")
+              print("verify ForceCanvas present: ", '"ForceCanvas"' in c)
+              print("verify VirtualControls present: ", '"VirtualControls"' in c)
+              raise SystemExit(0)
 
-          # Disable Steam plugin
-          c = re.sub(r'("name"\s*:\s*"OrangeGreenworks"\s*,\s*"status"\s*:\s*)true', r'\1false', c)
-          # Disable pixelate
-          c = c.replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
+          # JSON path succeeded — filter and rebuild
+          new_plugins = []
+          for pl in plugins:
+              name = pl.get('name', '')
+              if name in ('ForceCanvas', 'VirtualControls'):
+                  continue
+              if name == 'OrangeGreenworks':
+                  pl['status'] = False
+              new_plugins.append(pl)
 
+          new_plugins.append({"name": "VirtualControls", "status": True, "description": "", "parameters": {}})
+          new_plugins.append({"name": "ForceCanvas", "status": True, "description": "", "parameters": {}})
+
+          # Also disable Pixelate in CoreEngine
+          for pl in new_plugins:
+              if pl.get('name') == 'VisuMZ_0_CoreEngine':
+                  params = pl.get('parameters', {})
+                  if 'QoL:struct' in params:
+                      params['QoL:struct'] = params['QoL:struct'].replace('"PixelateImageRendering:eval":"true"', '"PixelateImageRendering:eval":"false"')
+
+          arr_out = json.dumps(new_plugins, ensure_ascii=False)
+          c = prefix + arr_out + suffix
           open(p, 'w', encoding='utf-8').write(c)
-
-          # Verify
-          for n in ("ForceCanvas", "VirtualControls", "OrangeGreenworks"):
-              m = re.search(r'"name"\s*:\s*"' + n + r'"\s*,\s*"status"\s*:\s*(\w+)', c)
-              print(n + ": " + (m.group(1) if m else "NOT FOUND"))
-          # Last 400 chars to confirm placement
-          print("--- plugins.js tail ---")
-          print(c[-400:])
+          print("ForceCanvas (last): True")
+          print("VirtualControls (second-last): True")
+          print("Greenworks disabled: True")
+          print("Total plugins:", len(new_plugins))
           PYEOF
 
       - name: Install Capacitor + StatusBar
@@ -295,7 +407,7 @@ jobs:
                 '}\n'
               )
               open(p, 'w', encoding='utf-8').write(java)
-              print('MainActivity rewritten (WindowInsetsController + legacy flags, onDestroy public)')
+              print('MainActivity rewritten (WindowInsetsController + onDestroy public)')
           PYEOF
 
       - name: Build
