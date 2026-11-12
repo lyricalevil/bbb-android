@@ -8,45 +8,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download game zip
-        run: |
-          wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
-          mkdir game
-          unzip -q game.zip -d game
-
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22'
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      - name: Verify Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -la $ANDROID_HOME || true
 
-      - name: Setup Capacitor
+      - name: Download and extract game
+        run: |
+          mkdir -p www
+          echo "Downloading from:"
+          echo "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
+          wget -O game.zip "https://github.com/${{ github.repository }}/releases/download/v1/Bad.Bitch.Blasters.Build.23837192.zip"
+          echo "Extracting..."
+          unzip -q game.zip -d www
+          if [ ! -f www/index.html ]; then
+            echo "index.html not at root, looking for nested folder..."
+            inner=$(find www -maxdepth 2 -name index.html | head -1 | xargs dirname 2>/dev/null || true)
+            if [ -n "$inner" ] && [ "$inner" != "www" ]; then
+              echo "Moving files from $inner up to www/"
+              shopt -s dotglob
+              mv "$inner"/* www/
+              rmdir "$inner" || true
+            fi
+          fi
+          echo "Contents of www:"
+          ls -la www | head -30
+
+      - name: Disable Steam plugin for Android
+        run: |
+          if [ -f www/js/plugins.js ]; then
+            sed -i 's/{"name":"OrangeGreenworks","status":true/{"name":"OrangeGreenworks","status":false/' www/js/plugins.js || true
+            echo "OrangeGreenworks patched (if it was present)"
+          fi
+
+      - name: Install Capacitor
         run: |
           npm init -y
           npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir=www
-          mkdir -p www
-          cp -r game/* www/
+
+      - name: Init Capacitor
+        run: |
+          npx cap init "Bad Bitch Blasters" "com.badbit.chblasters" --web-dir www
 
       - name: Add Android platform
         run: npx cap add android
 
-      - name: Patch Android config
+      - name: Patch Android manifest
         run: |
-          # Разрешаем cleartext и file access
-          sed -i 's/<application/<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/<application/<application android:usesCleartextTraffic="true" android:hardwareAccelerated="true"/' android/app/src/main/AndroidManifest.xml || true
 
       - name: Build APK
         run: |
           npx cap sync android
           cd android
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
