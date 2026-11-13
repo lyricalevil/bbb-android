@@ -428,7 +428,7 @@ jobs:
           })();
           EOF
 
-      - name: Write MusicPlayer v5 (own pos tracking)
+      - name: Write MusicPlayer v6
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/MusicPlayer.js" <<'EOF'
@@ -437,31 +437,25 @@ jobs:
               function log(m) { console.log("[MP] " + m); }
               const builtinTracks = window.__musicTracks || [];
               log("builtin " + builtinTracks.length);
-
               let root = null, panel = null;
               let expanded = false, showList = false;
               let currentType = null, currentIndex = -1, currentCustomId = null, currentName = "—";
               let override = false, isPlaying = false, userVolume = 1.0;
               let savedGameBgm = null;
+              let savedBgmForResume = null;
               let currentAudio = null;
               let customTracks = [];
               let progressTimer = null;
               let seeking = false;
-
-              // Позиция для builtin — считаем сами
-              let myPos = 0;           // сохранённая позиция (сек)
-              let myPosTimestamp = null; // Date.now()/1000 когда стартовал
+              let myPos = 0;
+              let myPosTimestamp = null;
               let myDuration = 0;
-
-              let origPlayBgm, origStopBgm, origFadeoutBgm, origPauseBgm, origResumeBgm;
+              let origPlayBgm, origStopBgm, origFadeoutBgm;
               try {
                   origPlayBgm = AudioManager.playBgm.bind(AudioManager);
                   origStopBgm = AudioManager.stopBgm.bind(AudioManager);
                   origFadeoutBgm = AudioManager.fadeOutBgm.bind(AudioManager);
-                  if (AudioManager.pauseBgm) origPauseBgm = AudioManager.pauseBgm.bind(AudioManager);
-                  if (AudioManager.resumeBgm) origResumeBgm = AudioManager.resumeBgm.bind(AudioManager);
-                  log("pauseBgm=" + (!!origPauseBgm) + " resumeBgm=" + (!!origResumeBgm));
-
+                  log("pauseBgm=" + (typeof AudioManager.pauseBgm) + " resumeBgm=" + (typeof AudioManager.resumeBgm));
                   AudioManager.playBgm = function (bgm, pos) {
                       if (override && (currentType === "builtin" || currentType === "custom")) { savedGameBgm = bgm; return; }
                       origPlayBgm(bgm, pos);
@@ -477,8 +471,6 @@ jobs:
                       origFadeoutBgm(d);
                   };
               } catch (e) { console.error("[MP] AudioManager:", e); }
-
-              // ---- IndexedDB ----
               function openDB() {
                   return new Promise((res, rej) => {
                       const r = indexedDB.open("mp_custom_tracks", 1);
@@ -518,18 +510,13 @@ jobs:
                   try { customTracks = await dbLoad(); log("custom " + customTracks.length); }
                   catch (e) { console.error("[MP] loadCustom:", e); }
               }
-
               function getCfg() { return window.__vc_cfg || {}; }
               function getPlayerCfg() { return (getCfg().player) || { x: null, y: null, panelX: null, panelY: null, scale: 1.0, opacity: 0.92, color: "#14141e", accent: "#5078c8" }; }
-
               function applyVolume() {
                   try { AudioManager._bgmVolume = userVolume; if (AudioManager._bgmBuffer) AudioManager._bgmBuffer.volume = userVolume; } catch (e) {}
                   if (currentAudio) currentAudio.volume = userVolume;
               }
-
-              // ==== POSITION TRACKING ====
               function nowSec() { return Date.now() / 1000; }
-
               function updateMyDuration() {
                   try {
                       if (currentType === "custom" && currentAudio) {
@@ -544,7 +531,6 @@ jobs:
                       }
                   } catch (e) {}
               }
-
               function getCurrentPos() {
                   try {
                       if (currentType === "custom" && currentAudio) {
@@ -552,42 +538,19 @@ jobs:
                           return isFinite(t) ? t : 0;
                       }
                       if (currentType === "builtin") {
-                          if (myPosTimestamp !== null) {
-                              return myPos + (nowSec() - myPosTimestamp);
-                          }
+                          if (myPosTimestamp !== null) return myPos + (nowSec() - myPosTimestamp);
                           return myPos;
                       }
                   } catch (e) {}
                   return 0;
               }
-
-              function getDuration() {
-                  updateMyDuration();
-                  return myDuration;
-              }
-
-              function startPositionTracking(startAt) {
-                  myPos = startAt || 0;
-                  myPosTimestamp = nowSec();
-              }
-              function pausePositionTracking() {
-                  if (myPosTimestamp !== null) {
-                      myPos += nowSec() - myPosTimestamp;
-                      myPosTimestamp = null;
-                  }
-              }
-              function resumePositionTracking() {
-                  if (myPosTimestamp === null) {
-                      myPosTimestamp = nowSec();
-                  }
-              }
-              function resetPositionTracking() {
-                  myPos = 0;
-                  myPosTimestamp = null;
-                  myDuration = 0;
-              }
-
+              function getDuration() { updateMyDuration(); return myDuration; }
+              function startPositionTracking(startAt) { myPos = startAt || 0; myPosTimestamp = nowSec(); }
+              function pausePositionTracking() { if (myPosTimestamp !== null) { myPos += nowSec() - myPosTimestamp; myPosTimestamp = null; } }
+              function resumePositionTracking() { if (myPosTimestamp === null) myPosTimestamp = nowSec(); }
+              function resetPositionTracking() { myPos = 0; myPosTimestamp = null; myDuration = 0; }
               function seekTo(pct) {
+                  if (!isFinite(pct) || pct < 0) return;
                   try {
                       if (currentType === "custom" && currentAudio) {
                           const d = currentAudio.duration;
@@ -600,19 +563,18 @@ jobs:
                       }
                       if (currentType === "builtin") {
                           const dur = getDuration();
-                          if (!dur) return;
+                          if (!dur || !isFinite(dur)) return;
                           const target = Math.max(0, Math.min(dur - 0.05, pct * dur));
                           const bgm = AudioManager._currentBgm;
                           if (origPlayBgm && bgm) {
-                              origPlayBgm(bgm, target);
+                              origPlayBgm({ name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan }, target);
                               startPositionTracking(target);
                               isPlaying = true;
+                              savedBgmForResume = { name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan };
                           }
                       }
                   } catch (e) { console.error("[MP] seek:", e); }
               }
-
-              // ==== PLAYBACK ====
               function stopAll() {
                   try { if (origStopBgm) origStopBgm(); } catch (e) {}
                   if (currentAudio) {
@@ -620,8 +582,8 @@ jobs:
                       currentAudio.src = "";
                   }
                   resetPositionTracking();
+                  savedBgmForResume = null;
               }
-
               function refreshFromGame() {
                   if (currentType && override) return;
                   const bgm = AudioManager._currentBgm;
@@ -631,6 +593,7 @@ jobs:
                           if (currentType !== "builtin" || currentIndex !== idx) {
                               currentType = "builtin"; currentIndex = idx; currentName = bgm.name; currentCustomId = null;
                               startPositionTracking(0);
+                              savedBgmForResume = { name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan };
                           }
                       }
                       isPlaying = !!AudioManager._bgmBuffer;
@@ -639,7 +602,6 @@ jobs:
                   }
                   updateUI();
               }
-
               function playBuiltin(index) {
                   if (!builtinTracks.length) return;
                   if (index < 0) index = builtinTracks.length - 1;
@@ -652,6 +614,7 @@ jobs:
                       const bgm = { name: builtinTracks[index], volume: 100, pitch: 100, pan: 0 };
                       if (origPlayBgm) origPlayBgm(bgm);
                       startPositionTracking(0);
+                      savedBgmForResume = { name: bgm.name, volume: 100, pitch: 100, pan: 0 };
                       isPlaying = true;
                       applyVolume();
                       setTimeout(updateMyDuration, 200);
@@ -659,7 +622,29 @@ jobs:
                   } catch (e) { console.error("[MP] playBuiltin:", e); }
                   updateUI();
               }
-
+              function pauseBuiltin() {
+                  const bgm = AudioManager._currentBgm;
+                  if (bgm) savedBgmForResume = { name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan };
+                  pausePositionTracking();
+                  try { if (origStopBgm) origStopBgm(); } catch (e) {}
+                  isPlaying = false;
+                  updateUI();
+              }
+              function resumeBuiltin() {
+                  if (!savedBgmForResume || !origPlayBgm) {
+                      if (currentIndex >= 0) playBuiltin(currentIndex);
+                      return;
+                  }
+                  try {
+                      const bgm = Object.assign({}, savedBgmForResume);
+                      AudioManager._bgmVolume = userVolume;
+                      origPlayBgm(bgm, myPos);
+                      resumePositionTracking();
+                      isPlaying = true;
+                      applyVolume();
+                  } catch (e) { console.error("[MP] resumeBuiltin:", e); }
+                  updateUI();
+              }
               function playCustom(track) {
                   stopAll();
                   if (!currentAudio) {
@@ -670,7 +655,6 @@ jobs:
                           if (isFinite(d) && d > 0) myDuration = d;
                           updateUI();
                       });
-                      currentAudio.addEventListener("timeupdate", () => { /* handled by timer */ });
                   }
                   const url = URL.createObjectURL(track.blob);
                   currentAudio.src = url;
@@ -685,35 +669,24 @@ jobs:
                   currentType = "custom"; currentCustomId = track.id; currentName = track.name; currentIndex = -1;
                   updateUI();
               }
-
               function togglePlay() {
                   if (isPlaying) {
-                      // PAUSE
                       if (currentType === "custom" && currentAudio) {
                           currentAudio.pause();
+                          isPlaying = false;
                       } else if (currentType === "builtin") {
-                          if (origPauseBgm) origPauseBgm();
-                          pausePositionTracking();
+                          pauseBuiltin();
                       }
-                      isPlaying = false;
                   } else {
-                      // RESUME
                       if (currentType === "custom" && currentAudio && currentAudio.src) {
                           currentAudio.play().catch(e => console.error(e));
                           isPlaying = true;
-                      } else if (currentType === "builtin" && origResumeBgm) {
-                          origResumeBgm();
-                          resumePositionTracking();
-                          isPlaying = true;
-                      } else if (currentType === "builtin" && currentIndex >= 0) {
-                          playBuiltin(currentIndex);
-                          isPlaying = true;
+                      } else if (currentType === "builtin") {
+                          resumeBuiltin();
                       } else if (currentIndex >= 0) {
                           playBuiltin(currentIndex);
-                          isPlaying = true;
                       } else if (customTracks.length) {
                           playCustom(customTracks[0]);
-                          isPlaying = true;
                       }
                   }
                   updateUI();
@@ -739,11 +712,11 @@ jobs:
                       if (savedGameBgm && origPlayBgm) { origPlayBgm(savedGameBgm); savedGameBgm = null; startPositionTracking(0); }
                       currentType = null; currentIndex = -1; currentCustomId = null; currentName = "—";
                       resetPositionTracking();
+                      savedBgmForResume = null;
                       setTimeout(refreshFromGame, 100);
                   }
                   updateUI();
               }
-
               function attachTap(el, cb) {
                   let sx = 0, sy = 0, st = 0, moved = false;
                   el.addEventListener("touchstart", (e) => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now(); moved = false; }, { passive: true });
@@ -808,16 +781,22 @@ jobs:
                   title.addEventListener("mousemove", move);
                   title.addEventListener("mouseup", end);
               }
-
+              function getTouch(e) {
+                  if (e.touches && e.touches.length) return e.touches[0];
+                  if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0];
+                  return e;
+              }
               function attachSeek(bar, fill, thumb) {
                   const getPct = (e) => {
-                      const t = (e.touches && e.touches[0]) || e;
+                      const t = getTouch(e);
+                      if (!t || t.clientX === undefined) return null;
                       const r = bar.getBoundingClientRect();
                       return Math.max(0, Math.min(1, (t.clientX - r.left) / r.width));
                   };
                   const start = (e) => {
-                      seeking = true;
                       const p = getPct(e);
+                      if (p === null) return;
+                      seeking = true;
                       fill.style.width = (p * 100) + "%";
                       if (thumb) thumb.style.left = (p * 100) + "%";
                       if (e.cancelable) e.preventDefault();
@@ -825,6 +804,7 @@ jobs:
                   const move = (e) => {
                       if (!seeking) return;
                       const p = getPct(e);
+                      if (p === null) return;
                       fill.style.width = (p * 100) + "%";
                       if (thumb) thumb.style.left = (p * 100) + "%";
                       if (e.cancelable) e.preventDefault();
@@ -833,20 +813,20 @@ jobs:
                       if (!seeking) return;
                       seeking = false;
                       const p = getPct(e);
-                      seekTo(p);
+                      if (p !== null) seekTo(p);
                       if (panel) {
-                          panel._fill.style.width = (p * 100) + "%";
-                          if (panel._thumb) panel._thumb.style.left = (p * 100) + "%";
+                          panel._fill.style.width = ((p || 0) * 100) + "%";
+                          if (panel._thumb) panel._thumb.style.left = ((p || 0) * 100) + "%";
                       }
                   };
                   bar.addEventListener("touchstart", start, { passive: false });
                   bar.addEventListener("touchmove", move, { passive: false });
                   bar.addEventListener("touchend", end, { passive: false });
+                  bar.addEventListener("touchcancel", end, { passive: false });
                   bar.addEventListener("mousedown", start);
                   bar.addEventListener("mousemove", move);
                   bar.addEventListener("mouseup", end);
               }
-
               function applyCfg() {
                   const p = getPlayerCfg();
                   if (!root) return;
@@ -885,7 +865,6 @@ jobs:
                       "width:" + size + "px;height:" + size + "px;background:" + (bg || "rgba(40,40,60,0.9)") + ";color:" + (fg || "#fff") + ";font-size:" + Math.round(size * 0.45) + "px;";
                   return d;
               }
-
               function rebuildList() {
                   if (!panel || !panel._list) return;
                   const list = panel._list;
@@ -937,7 +916,6 @@ jobs:
                       list.appendChild(empty);
                   }
               }
-
               let fileInput = null;
               function addCustomFiles() {
                   if (!fileInput) {
@@ -961,28 +939,25 @@ jobs:
                   }
                   fileInput.click();
               }
-
               function buildPanel() {
                   const p = document.createElement("div");
                   p.style.cssText = "position:fixed;top:60px;left:60px;padding:10px;border-radius:10px;color:#fff;font-family:Arial,sans-serif;display:none;flex-direction:column;gap:6px;z-index:2147483645;min-width:260px;max-width:320px;box-shadow:0 4px 16px rgba(0,0,0,0.6);";
                   p.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
-
                   const title = document.createElement("div");
                   title.style.cssText = "font-size:13px;text-align:center;color:#ccc;padding:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:none;-webkit-user-select:none;background:rgba(255,255,255,0.05);border-radius:6px;";
                   title.textContent = "—";
                   title.title = "Перетащи меня";
                   p.appendChild(title); p._title = title;
                   attachDragToTitle(title, p);
-
                   const seekRow = document.createElement("div");
                   seekRow.style.cssText = "padding:2px 0;";
                   const bar = document.createElement("div");
-                  bar.style.cssText = "position:relative;height:10px;background:rgba(255,255,255,0.2);border-radius:5px;cursor:pointer;touch-action:none;margin:4px 0;";
+                  bar.style.cssText = "position:relative;height:14px;background:rgba(255,255,255,0.2);border-radius:7px;cursor:pointer;touch-action:none;margin:4px 0;";
                   const fill = document.createElement("div");
-                  fill.style.cssText = "height:100%;width:0%;background:#5078c8;border-radius:5px;pointer-events:none;transition:width 0.05s linear;";
+                  fill.style.cssText = "height:100%;width:0%;background:#5078c8;border-radius:7px;pointer-events:none;";
                   bar.appendChild(fill);
                   const thumb = document.createElement("div");
-                  thumb.style.cssText = "position:absolute;top:50%;left:0%;width:16px;height:16px;background:#fff;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.5);transition:left 0.05s linear;";
+                  thumb.style.cssText = "position:absolute;top:50%;left:0%;width:18px;height:18px;background:#fff;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.5);";
                   bar.appendChild(thumb);
                   seekRow.appendChild(bar);
                   const timeRow = document.createElement("div");
@@ -994,14 +969,12 @@ jobs:
                   p.appendChild(seekRow);
                   p._bar = bar; p._fill = fill; p._thumb = thumb; p._timeCur = timeCur; p._timeTot = timeTot;
                   attachSeek(bar, fill, thumb);
-
                   const btns = document.createElement("div");
                   btns.style.cssText = "display:flex;justify-content:center;gap:6px;";
                   const prevBtn = makeBtn("⏮", 36); attachTap(prevBtn, prevTrack); btns.appendChild(prevBtn);
                   const playBtn = makeBtn("▶", 40, "rgba(80,120,200,0.9)"); attachTap(playBtn, togglePlay); btns.appendChild(playBtn); p._playBtn = playBtn;
                   const nextBtn = makeBtn("⏭", 36); attachTap(nextBtn, nextTrack); btns.appendChild(nextBtn);
                   p.appendChild(btns);
-
                   const volRow = document.createElement("div");
                   volRow.style.cssText = "display:flex;align-items:center;gap:6px;";
                   const vl = document.createElement("span"); vl.textContent = "🔊"; vl.style.cssText = "font-size:14px;";
@@ -1013,14 +986,12 @@ jobs:
                   volIn.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
                   volRow.appendChild(volIn);
                   p.appendChild(volRow);
-
                   const ctrl = document.createElement("div");
                   ctrl.style.cssText = "display:flex;justify-content:space-between;gap:6px;";
                   const listBtn = makeBtn("☰", 32); attachTap(listBtn, () => { showList = !showList; updateListVisibility(); }); ctrl.appendChild(listBtn);
                   const ovBtn = makeBtn("🔒", 32); attachTap(ovBtn, toggleOverride); ctrl.appendChild(ovBtn); p._overrideBtn = ovBtn;
                   const closeBtn = makeBtn("✕", 32, "rgba(80,20,20,0.9)"); attachTap(closeBtn, () => { expanded = false; updateVisibility(); }); ctrl.appendChild(closeBtn);
                   p.appendChild(ctrl);
-
                   const list = document.createElement("div");
                   list.style.cssText = "display:none;max-height:240px;overflow-y:auto;-webkit-overflow-scrolling:touch;border-top:1px solid #444;padding-top:4px;touch-action:pan-y;";
                   list.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
@@ -1045,9 +1016,7 @@ jobs:
                   const pos = getCurrentPos();
                   const dur = getDuration();
                   let pct = 0;
-                  if (dur > 0 && isFinite(dur)) {
-                      pct = Math.min(100, Math.max(0, (pos / dur) * 100));
-                  }
+                  if (dur > 0 && isFinite(dur)) pct = Math.min(100, Math.max(0, (pos / dur) * 100));
                   panel._fill.style.width = pct + "%";
                   if (panel._thumb) panel._thumb.style.left = pct + "%";
                   if (panel._timeCur) panel._timeCur.textContent = fmtTime(pos);
@@ -1060,12 +1029,11 @@ jobs:
                   if (expanded) {
                       if (currentType === null) refreshFromGame();
                       if (progressTimer) clearInterval(progressTimer);
-                      progressTimer = setInterval(updateProgress, 250);
+                      progressTimer = setInterval(updateProgress, 200);
                   } else {
                       if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
                   }
               }
-
               function build() {
                   if (root) return;
                   root = document.createElement("div");
