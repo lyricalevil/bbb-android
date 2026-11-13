@@ -428,7 +428,7 @@ jobs:
           })();
           EOF
 
-      - name: Write MusicPlayer v7
+      - name: Write MusicPlayer v8
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/MusicPlayer.js" <<'EOF'
@@ -520,8 +520,14 @@ jobs:
               }
               function nowSec() { return Date.now() / 1000; }
 
-              function getBuffer() {
-                  try { return AudioManager._bgmBuffer; } catch (e) { return null; }
+              function getBufferDuration() {
+                  try {
+                      const buf = AudioManager._bgmBuffer;
+                      if (!buf) return 0;
+                      if (buf._element && isFinite(buf._element.duration) && buf._element.duration > 0) return buf._element.duration;
+                      if (buf._buffer && isFinite(buf._buffer.duration) && buf._buffer.duration > 0) return buf._buffer.duration;
+                  } catch (e) {}
+                  return 0;
               }
 
               function getCurrentPos() {
@@ -531,46 +537,37 @@ jobs:
                           return isFinite(t) ? t : 0;
                       }
                       if (currentType === "builtin") {
-                          const buf = getBuffer();
-                          if (buf) {
-                              if (buf._element && typeof buf._element.currentTime === "number") {
-                                  return buf._element.currentTime;
-                              }
-                              if (buf._buffer && myPosTimestamp !== null) {
-                                  return myPos + (nowSec() - myPosTimestamp);
-                              }
+                          const buf = AudioManager._bgmBuffer;
+                          if (buf && buf._element && typeof buf._element.currentTime === "number") {
+                              return buf._element.currentTime;
                           }
+                          if (myPosTimestamp !== null) return myPos + (nowSec() - myPosTimestamp);
                           return myPos;
                       }
                   } catch (e) {}
                   return 0;
               }
               function getDuration() {
-                  try {
-                      if (currentType === "custom" && currentAudio) {
-                          const d = currentAudio.duration;
-                          if (isFinite(d) && d > 0) return d;
-                      }
-                      if (currentType === "builtin") {
-                          const buf = getBuffer();
-                          if (buf) {
-                              if (buf._element && buf._element.duration) {
-                                  const d = buf._element.duration;
-                                  if (isFinite(d) && d > 0) return d;
-                              }
-                              if (buf._buffer && buf._buffer.duration) {
-                                  const d = buf._buffer.duration;
-                                  if (isFinite(d) && d > 0) return d;
-                              }
-                          }
-                      }
-                  } catch (e) {}
+                  if (currentType === "custom" && currentAudio) {
+                      const d = currentAudio.duration;
+                      if (isFinite(d) && d > 0) return d;
+                  }
+                  if (currentType === "builtin") {
+                      const d = getBufferDuration();
+                      if (d > 0) { myDuration = d; return d; }
+                  }
                   return myDuration;
               }
               function startPositionTracking(startAt) { myPos = startAt || 0; myPosTimestamp = nowSec(); }
               function pausePositionTracking() { if (myPosTimestamp !== null) { myPos += nowSec() - myPosTimestamp; myPosTimestamp = null; } }
               function resumePositionTracking() { if (myPosTimestamp === null) myPosTimestamp = nowSec(); }
               function resetPositionTracking() { myPos = 0; myPosTimestamp = null; myDuration = 0; }
+
+              function forceKillBuffer() {
+                  try { if (origStopBgm) origStopBgm(); } catch (e) {}
+                  try { AudioManager._currentBgm = null; } catch (e) {}
+                  try { AudioManager._bgmBuffer = null; } catch (e) {}
+              }
 
               function seekTo(pct) {
                   if (!isFinite(pct) || pct < 0 || pct > 1) return;
@@ -584,35 +581,25 @@ jobs:
                           return;
                       }
                       if (currentType === "builtin") {
-                          const buf = getBuffer();
-                          if (!buf) { log("seek: no buffer"); return; }
-                          let dur = 0;
-                          if (buf._element && buf._element.duration) dur = buf._element.duration;
-                          else if (buf._buffer && buf._buffer.duration) dur = buf._buffer.duration;
+                          const bgm = savedBgmForResume || AudioManager._currentBgm;
+                          if (!bgm) { log("seek: no bgm"); return; }
+                          let dur = getBufferDuration() || myDuration;
                           if (!dur || !isFinite(dur) || dur <= 0) { log("seek: no duration"); return; }
                           const target = Math.max(0, Math.min(dur - 0.05, pct * dur));
-                          if (buf._element && typeof buf._element.currentTime === "number") {
-                              try { buf._element.currentTime = target; log("seek HTML5 -> " + target.toFixed(2)); }
-                              catch (e) { console.error("[MP] seek html5:", e); }
-                              myPos = target;
-                              myPosTimestamp = nowSec();
-                              return;
-                          }
-                          if (buf._buffer && typeof buf.play === "function") {
-                              try {
-                                  if (typeof buf.stop === "function") buf.stop();
-                                  buf.play(buf._buffer, target);
-                                  startPositionTracking(target);
-                                  log("seek WebAudio -> " + target.toFixed(2));
-                              } catch (e) { console.error("[MP] seek webaudio:", e); }
-                              return;
-                          }
+                          forceKillBuffer();
+                          try {
+                              if (origPlayBgm) origPlayBgm(Object.assign({}, bgm), target);
+                              startPositionTracking(target);
+                              savedBgmForResume = Object.assign({}, bgm);
+                              isPlaying = true;
+                              log("seek builtin -> " + target.toFixed(2) + "/" + dur.toFixed(2));
+                          } catch (e) { console.error("[MP] seek playBgm:", e); }
                       }
                   } catch (e) { console.error("[MP] seek:", e); }
               }
 
               function stopAll() {
-                  try { if (origStopBgm) origStopBgm(); } catch (e) {}
+                  forceKillBuffer();
                   if (currentAudio) {
                       try { currentAudio.pause(); if (currentAudio.src) URL.revokeObjectURL(currentAudio.src); } catch (e) {}
                       currentAudio.src = "";
@@ -657,38 +644,28 @@ jobs:
                   updateUI();
               }
               function pauseBuiltin() {
-                  const buf = getBuffer();
-                  if (buf) {
-                      if (buf._element && !buf._element.paused) {
-                          buf._element.pause();
-                          myPos = buf._element.currentTime;
-                          myPosTimestamp = null;
-                      } else if (buf._buffer) {
-                          pausePositionTracking();
-                          try { if (typeof buf.stop === "function") buf.stop(); } catch (e) {}
-                      }
+                  const bgm = AudioManager._currentBgm || savedBgmForResume;
+                  if (bgm) {
+                      savedBgmForResume = { name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan };
+                      const pos = getCurrentPos();
+                      myPos = pos;
+                      myPosTimestamp = null;
                   }
+                  try { if (origStopBgm) origStopBgm(); } catch (e) {}
                   isPlaying = false;
                   updateUI();
               }
               function resumeBuiltin() {
-                  const buf = getBuffer();
-                  if (buf && buf._element && myPos > 0) {
-                      try { buf._element.currentTime = myPos; buf._element.play(); } catch (e) {}
-                      myPosTimestamp = nowSec();
-                      isPlaying = true;
-                      updateUI();
-                      return;
-                  }
                   if (!savedBgmForResume || !origPlayBgm) {
                       if (currentIndex >= 0) playBuiltin(currentIndex);
                       return;
                   }
                   try {
-                      const bgm = Object.assign({}, savedBgmForResume);
                       AudioManager._bgmVolume = userVolume;
-                      origPlayBgm(bgm, myPos);
-                      resumePositionTracking();
+                      AudioManager._currentBgm = null;
+                      AudioManager._bgmBuffer = null;
+                      origPlayBgm(Object.assign({}, savedBgmForResume), myPos);
+                      myPosTimestamp = nowSec();
                       isPlaying = true;
                       applyVolume();
                   } catch (e) { console.error("[MP] resumeBuiltin:", e); }
