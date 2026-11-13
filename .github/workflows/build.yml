@@ -27,17 +27,13 @@ jobs:
           tracks = []
           if os.path.isdir(bgm_dir):
               for f in sorted(os.listdir(bgm_dir)):
-                  if f.startswith('.') or not os.path.isfile(os.path.join(bgm_dir, f)):
-                      continue
+                  if f.startswith('.') or not os.path.isfile(os.path.join(bgm_dir, f)): continue
                   name = f
                   for ext in ('.ogg_', '.ogg', '.m4a', '.mp3', '.wav'):
                       if name.endswith(ext):
-                          name = name[:-len(ext)]
-                          break
-                  if name and name not in tracks:
-                      tracks.append(name)
+                          name = name[:-len(ext)]; break
+                  if name and name not in tracks: tracks.append(name)
           print("Found {} tracks".format(len(tracks)))
-          print("First 5:", tracks[:5])
           with open("www/js/plugins/MusicPlayerTracks.js", "w", encoding="utf-8") as f:
               f.write("window.__musicTracks = " + json.dumps(tracks, ensure_ascii=False) + ";\n")
           PYEOF
@@ -59,9 +55,9 @@ jobs:
               } catch (e) {}
               try {
                   if (typeof Bitmap !== "undefined" && Bitmap.prototype._createBaseTexture) {
-                      const orig = Bitmap.prototype._createBaseTexture;
+                      const o = Bitmap.prototype._createBaseTexture;
                       Bitmap.prototype._createBaseTexture = function (b) {
-                          const bt = orig.call(this, b);
+                          const bt = o.call(this, b);
                           try { bt.scaleMode = PIXI.SCALE_MODES.NEAREST; bt.mipmap = PIXI.MIPMAP_MODES.OFF; bt.update(); } catch (e) {}
                           return bt;
                       };
@@ -69,9 +65,9 @@ jobs:
               } catch (e) {}
               function retrofit() {
                   try {
-                      const cache = PIXI.utils.TextureCache;
-                      for (const k in cache) {
-                          const t = cache[k];
+                      const c = PIXI.utils.TextureCache;
+                      for (const k in c) {
+                          const t = c[k];
                           if (t && t.baseTexture && t.baseTexture.scaleMode !== PIXI.SCALE_MODES.NEAREST) {
                               t.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
                               t.baseTexture.update();
@@ -106,10 +102,7 @@ jobs:
                       oU(dt);
                       if (speedOn) { skip++; oU(dt); skip--; }
                   };
-                  SceneManager.updateInputData = function () {
-                      if (skip > 0) return;
-                      oI();
-                  };
+                  SceneManager.updateInputData = function () { if (skip > 0) return; oI(); };
               } catch (e) {}
           })();
           EOF
@@ -122,7 +115,6 @@ jobs:
               "use strict";
               const VERSION = 4;
               const BTN_IDS = ["up","down","left","right","ok","no","mnu"];
-
               const DEFAULT = {
                   _version: VERSION,
                   opacity: 0.45, scale: 1.0, color: "#ffffff",
@@ -137,9 +129,8 @@ jobs:
                       no:    { scale: null, color: null, opacity: null, label: null },
                       mnu:   { scale: null, color: null, opacity: null, label: null }
                   },
-                  player: { x: null, y: null, scale: 1.0, opacity: 0.92, color: "#14141e", accent: "#5078c8" }
+                  player: { x: null, y: null, panelX: null, panelY: null, scale: 1.0, opacity: 0.92, color: "#14141e", accent: "#5078c8" }
               };
-
               function loadCfg() {
                   try {
                       const raw = localStorage.getItem("vc_cfg");
@@ -158,19 +149,12 @@ jobs:
                   return JSON.parse(JSON.stringify(DEFAULT));
               }
               function saveCfg() { CFG._version = VERSION; try { localStorage.setItem("vc_cfg", JSON.stringify(CFG)); } catch (e) {} }
-
               let CFG = loadCfg();
               window.__vc_cfg = CFG;
-
               let root = null, editMode = false, panelOpen = false;
               let buttons = {}, settingsBtn = null, panel = null;
               if (window.__vc_setSpeed) window.__vc_setSpeed(CFG.speedX2);
-
-              function btnProp(id, prop) {
-                  const pb = CFG.perButton[id] || {};
-                  return pb[prop] != null ? pb[prop] : CFG[prop];
-              }
-
+              function btnProp(id, prop) { const pb = CFG.perButton[id] || {}; return pb[prop] != null ? pb[prop] : CFG[prop]; }
               function tryHideStatusBar() {
                   try {
                       if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.StatusBar) {
@@ -181,56 +165,29 @@ jobs:
               }
               tryHideStatusBar(); setTimeout(tryHideStatusBar, 500);
               setTimeout(tryHideStatusBar, 2000); setTimeout(tryHideStatusBar, 5000);
-
-              // Tap vs swipe
               function attachTap(el, cb) {
                   let sx = 0, sy = 0, st = 0, moved = false;
-                  const onStart = (e) => {
-                      const t = (e.touches && e.touches[0]) || e;
-                      sx = t.clientX; sy = t.clientY;
-                      st = Date.now(); moved = false;
-                  };
-                  const onMove = (e) => {
-                      const t = (e.touches && e.touches[0]) || e;
-                      if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) moved = true;
-                  };
-                  const onEnd = (e) => {
-                      if (moved) return;
-                      if (Date.now() - st > 500) return;
-                      if (e) { e.preventDefault(); e.stopPropagation(); }
-                      cb();
-                  };
-                  el.addEventListener("touchstart", onStart, { passive: true });
-                  el.addEventListener("touchmove", onMove, { passive: true });
-                  el.addEventListener("touchend", onEnd, { passive: false });
-                  el.addEventListener("click", onEnd);
+                  el.addEventListener("touchstart", (e) => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now(); moved = false; }, { passive: true });
+                  el.addEventListener("touchmove", (e) => { const t = e.touches[0]; if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) moved = true; }, { passive: true });
+                  el.addEventListener("touchend", (e) => { if (moved || Date.now() - st > 500) return; e.preventDefault(); e.stopPropagation(); cb(); }, { passive: false });
+                  el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); cb(); });
               }
-              // Fast tap for VC buttons
               function attachTapFast(el, cb) {
                   let last = 0;
-                  const h = (e) => {
-                      if (e) { e.preventDefault(); e.stopPropagation(); }
-                      const now = Date.now();
-                      if (now - last < 100) return;
-                      last = now;
-                      cb();
-                  };
+                  const h = (e) => { if (e) { e.preventDefault(); e.stopPropagation(); } const now = Date.now(); if (now - last < 100) return; last = now; cb(); };
                   el.addEventListener("touchstart", h, { passive: false });
                   el.addEventListener("mousedown", h);
               }
-
               function setKey(key, on) {
                   if (key === "mnu") {
                       if (on && SceneManager._scene instanceof Scene_Map && !$gameMessage.isBusy()) SceneManager._scene.callMenu();
                       return;
                   }
                   const map = { ok: "ok", no: "cancel", up: "up", down: "down", left: "left", right: "right" };
-                  const ik = map[key];
-                  if (!ik) return;
+                  const ik = map[key]; if (!ik) return;
                   Input._currentState[ik] = on;
                   if (on) { Input._latestButton = ik; Input._pressedTime = 0; }
               }
-
               function parseColor(hex) {
                   hex = (hex || "#ffffff").replace('#', '');
                   if (hex.length === 3) hex = hex.split('').map(c => c+c).join('');
@@ -238,7 +195,6 @@ jobs:
               }
               function rgba(hex, a) { const c = parseColor(hex); return "rgba(" + c.r + "," + c.g + "," + c.b + "," + a + ")"; }
               function isLight(hex) { const c = parseColor(hex); return (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) > 150; }
-
               function makeButton(id, baseLabel, baseSize, circular) {
                   const el = document.createElement("div");
                   el.dataset.vcid = id;
@@ -251,18 +207,14 @@ jobs:
                   el.addEventListener("mousedown", start);
                   el.addEventListener("mouseup", end);
                   el.addEventListener("mouseleave", end);
-                  el._baseSize = baseSize;
-                  el._defaultLabel = baseLabel;
+                  el._baseSize = baseSize; el._defaultLabel = baseLabel;
                   return el;
               }
-
               function updateButtonStyle(el, id) {
                   const baseSz = el._baseSize || 68;
                   const sz = Math.round(baseSz * btnProp(id, "scale"));
-                  const col = btnProp(id, "color");
-                  const op = btnProp(id, "opacity");
-                  el.style.width = sz + "px";
-                  el.style.height = sz + "px";
+                  const col = btnProp(id, "color"), op = btnProp(id, "opacity");
+                  el.style.width = sz + "px"; el.style.height = sz + "px";
                   el.style.background = rgba(col, op);
                   el.style.border = "2px solid " + rgba(col, Math.min(1, op + 0.3));
                   el.style.color = isLight(col) ? "#000" : "#fff";
@@ -271,7 +223,6 @@ jobs:
                   const lbl = (CFG.perButton[id] && CFG.perButton[id].label) || el._defaultLabel;
                   el.textContent = lbl;
               }
-
               let dragState = null;
               function startDrag(e, el, id) {
                   const t = (e.touches && e.touches[0]) || e;
@@ -296,19 +247,16 @@ jobs:
                   const r = dragState.el.getBoundingClientRect();
                   if (!CFG.positions) CFG.positions = {};
                   CFG.positions[dragState.id] = { x: r.left / innerWidth * 100, y: r.top / innerHeight * 100 };
-                  saveCfg();
-                  dragState = null;
+                  saveCfg(); dragState = null;
               }
               document.addEventListener("touchend", endDrag);
               document.addEventListener("mouseup", endDrag);
-
               function getPos(id) {
                   if (CFG.positions && CFG.positions[id]) return CFG.positions[id];
                   const dpad = 150, as = dpad / 3, margin = 30, btn = 68;
                   const baseL = margin / innerWidth * 100;
                   const baseT = (innerHeight - (dpad + margin)) / innerHeight * 100;
-                  const asL = as / innerWidth * 100;
-                  const asT = as / innerHeight * 100;
+                  const asL = as / innerWidth * 100, asT = as / innerHeight * 100;
                   const btnL = (innerWidth - margin - btn) / innerWidth * 100;
                   const btnT = (innerHeight - margin - btn) / innerHeight * 100;
                   const stepL = (btn + 14) / innerWidth * 100;
@@ -325,11 +273,9 @@ jobs:
               }
               function applyPos(el, id) { const p = getPos(id); el.style.left = p.x + "%"; el.style.top = p.y + "%"; }
               function applyAllPositions() { for (const id in buttons) applyPos(buttons[id], id); }
-
               function updateVisibility() {
                   if (!root) return;
-                  const s = SceneManager._scene;
-                  if (!s) return;
+                  const s = SceneManager._scene; if (!s) return;
                   let d = true, a = true, k = true;
                   const isGame = (s instanceof Scene_Map) || (s instanceof Scene_Battle);
                   if (!isGame && CFG.hideInMenu) { d = false; a = false; k = true; }
@@ -338,8 +284,6 @@ jobs:
                   ["no","mnu"].forEach(id => { if (buttons[id]) buttons[id].style.display = a ? "flex" : "none"; });
                   if (buttons["ok"]) buttons["ok"].style.display = k ? "flex" : "none";
               }
-
-              // ---- Settings panel ----
               function makeSection(title, expanded) {
                   const wrap = document.createElement("div");
                   wrap.style.cssText = "margin-bottom:10px;border:1px solid #333;border-radius:8px;overflow:hidden;";
@@ -354,105 +298,70 @@ jobs:
                       body.style.display = open ? "block" : "none";
                       hdr.querySelector("span:last-child").textContent = open ? "▼" : "▶";
                   });
-                  wrap.appendChild(hdr);
-                  wrap.appendChild(body);
+                  wrap.appendChild(hdr); wrap.appendChild(body);
                   return { wrap, body };
               }
-
               function makeSlider(parent, label, value, min, max, step, onChange) {
                   const row = document.createElement("div");
                   row.style.cssText = "margin-bottom:10px;";
-                  const lblRow = document.createElement("div");
-                  lblRow.style.cssText = "display:flex;justify-content:space-between;font-size:12px;color:#aaa;margin-bottom:4px;";
-                  const lbl = document.createElement("span");
-                  lbl.textContent = label;
-                  const val = document.createElement("span");
-                  val.textContent = value;
-                  lblRow.appendChild(lbl); lblRow.appendChild(val);
-                  row.appendChild(lblRow);
+                  const lr = document.createElement("div");
+                  lr.style.cssText = "display:flex;justify-content:space-between;font-size:12px;color:#aaa;margin-bottom:4px;";
+                  const l = document.createElement("span"); l.textContent = label;
+                  const v = document.createElement("span"); v.textContent = value;
+                  lr.appendChild(l); lr.appendChild(v); row.appendChild(lr);
                   const inp = document.createElement("input");
                   inp.type = "range"; inp.min = min; inp.max = max; inp.step = step; inp.value = value;
                   inp.style.cssText = "width:100%;touch-action:manipulation;";
-                  inp.addEventListener("input", () => { val.textContent = inp.value; onChange(parseFloat(inp.value)); });
+                  inp.addEventListener("input", () => { v.textContent = inp.value; onChange(parseFloat(inp.value)); });
                   inp.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
-                  row.appendChild(inp);
-                  parent.appendChild(row);
-                  return { el: row, inp, val };
+                  row.appendChild(inp); parent.appendChild(row);
               }
-
               function makeColorRow(parent, label, current, onChange) {
                   const row = document.createElement("div");
                   row.style.cssText = "margin-bottom:10px;";
-                  const lbl = document.createElement("div");
-                  lbl.textContent = label;
-                  lbl.style.cssText = "font-size:12px;color:#aaa;margin-bottom:4px;";
-                  row.appendChild(lbl);
+                  const l = document.createElement("div");
+                  l.textContent = label; l.style.cssText = "font-size:12px;color:#aaa;margin-bottom:4px;";
+                  row.appendChild(l);
                   const wrap = document.createElement("div");
                   wrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
                   ["#ffffff","#202020","#d04040","#4060d0","#40a040","#d0a020","#c040a0","#40c0c0"].forEach(hex => {
                       const cb = document.createElement("div");
                       cb.style.cssText = "width:30px;height:30px;border-radius:50%;background:" + hex + ";cursor:pointer;border:3px solid " + (current === hex ? "#fff" : "transparent") + ";touch-action:manipulation;";
-                      attachTap(cb, () => {
-                          onChange(hex);
-                          Array.from(wrap.children).forEach(c => c.style.border = "3px solid transparent");
-                          cb.style.border = "3px solid #fff";
-                      });
+                      attachTap(cb, () => { onChange(hex); Array.from(wrap.children).forEach(c => c.style.border = "3px solid transparent"); cb.style.border = "3px solid #fff"; });
                       wrap.appendChild(cb);
                   });
-                  row.appendChild(wrap);
-                  parent.appendChild(row);
-                  return row;
+                  row.appendChild(wrap); parent.appendChild(row);
               }
-
               function makeToggle(parent, label, value, onChange) {
                   const row = document.createElement("div");
                   row.style.cssText = "margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;";
-                  const lbl = document.createElement("span");
-                  lbl.textContent = label;
-                  lbl.style.cssText = "font-size:13px;";
-                  row.appendChild(lbl);
+                  const l = document.createElement("span"); l.textContent = label; l.style.cssText = "font-size:13px;";
+                  row.appendChild(l);
                   const b = document.createElement("div");
                   b.style.cssText = "padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:bold;touch-action:manipulation;user-select:none;-webkit-user-select:none;";
-                  function refresh() {
-                      b.textContent = value ? "ВКЛ" : "ВЫКЛ";
-                      b.style.background = value ? "#40a040" : "#606060";
-                  }
+                  function refresh() { b.textContent = value ? "ВКЛ" : "ВЫКЛ"; b.style.background = value ? "#40a040" : "#606060"; }
                   refresh();
                   attachTap(b, () => { value = !value; refresh(); onChange(value); });
-                  row.appendChild(b);
-                  parent.appendChild(row);
+                  row.appendChild(b); parent.appendChild(row);
               }
-
               function makeActionBtn(parent, label, bg, cb) {
                   const b = document.createElement("div");
                   b.textContent = label;
                   b.style.cssText = "padding:10px;border-radius:6px;cursor:pointer;text-align:center;font-size:14px;font-weight:bold;margin-bottom:8px;touch-action:manipulation;user-select:none;-webkit-user-select:none;background:" + (bg || "#4060d0") + ";color:#fff;";
-                  attachTap(b, cb);
-                  parent.appendChild(b);
+                  attachTap(b, cb); parent.appendChild(b);
                   return b;
               }
-
               let editingButton = "ok";
-
-              function refreshAll() {
-                  for (const id in buttons) updateButtonStyle(buttons[id], id);
-                  if (settingsBtn) updateSettingsBtnStyle();
-              }
-
+              function refreshAll() { for (const id in buttons) updateButtonStyle(buttons[id], id); if (settingsBtn) updateSettingsBtnStyle(); }
               function updateSettingsBtnStyle() {
-                  const s = 40;
-                  const op = CFG.opacity;
-                  const col = CFG.color;
-                  settingsBtn.style.width = s + "px";
-                  settingsBtn.style.height = s + "px";
-                  settingsBtn.style.fontSize = "20px";
+                  const s = 40, op = CFG.opacity, col = CFG.color;
+                  settingsBtn.style.width = s + "px"; settingsBtn.style.height = s + "px"; settingsBtn.style.fontSize = "20px";
                   settingsBtn.style.background = rgba(col, Math.min(0.8, op + 0.2));
                   settingsBtn.style.color = isLight(col) ? "#000" : "#fff";
               }
-
               function buildPanel() {
                   const p = document.createElement("div");
-                  p.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(92vw,560px);max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:rgba(20,20,30,0.97);color:#fff;font-family:Arial,sans-serif;padding:16px;border-radius:12px;z-index:2147483647;box-shadow:0 4px 24px rgba(0,0,0,0.9);display:none;touch-action:pan-y;";
+                  p.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(92vw,560px);max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:rgba(20,20,30,0.97);color:#fff;font-family:Arial,sans-serif;padding:16px 16px 0 16px;border-radius:12px;z-index:2147483647;box-shadow:0 4px 24px rgba(0,0,0,0.9);display:none;touch-action:pan-y;";
                   p.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
 
                   const title = document.createElement("div");
@@ -460,10 +369,9 @@ jobs:
                   title.style.cssText = "font-size:18px;font-weight:bold;margin-bottom:14px;text-align:center;";
                   p.appendChild(title);
 
-                  // ===== BUTTONS SECTION =====
+                  // BUTTONS
                   const secB = makeSection("Кнопки", true);
                   p.appendChild(secB.wrap);
-
                   const chips = document.createElement("div");
                   chips.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;";
                   BTN_IDS.forEach(id => {
@@ -480,48 +388,30 @@ jobs:
                       chips.appendChild(chip);
                   });
                   secB.body.appendChild(chips);
-
                   const editBody = document.createElement("div");
                   secB.body.appendChild(editBody);
-
                   function refreshButtonEditor() {
                       editBody.innerHTML = "";
                       const id = editingButton;
                       const pb = CFG.perButton[id] || {};
-
-                      makeSlider(editBody, "Размер (переопределение)", pb.scale != null ? Math.round(pb.scale * 100) : Math.round(CFG.scale * 100), 50, 200, 5, (v) => {
-                          CFG.perButton[id].scale = v / 100;
-                          saveCfg(); updateButtonStyle(buttons[id], id); applyPos(buttons[id], id);
-                      });
-                      makeSlider(editBody, "Прозрачность", pb.opacity != null ? Math.round(pb.opacity * 100) : Math.round(CFG.opacity * 100), 10, 100, 5, (v) => {
-                          CFG.perButton[id].opacity = v / 100;
-                          saveCfg(); updateButtonStyle(buttons[id], id);
-                      });
-                      makeColorRow(editBody, "Цвет", pb.color || CFG.color, (hex) => {
-                          CFG.perButton[id].color = hex;
-                          saveCfg(); updateButtonStyle(buttons[id], id);
-                      });
-
-                      // Custom label
+                      makeSlider(editBody, "Размер", pb.scale != null ? Math.round(pb.scale * 100) : Math.round(CFG.scale * 100), 50, 200, 5, (v) => { CFG.perButton[id].scale = v / 100; saveCfg(); updateButtonStyle(buttons[id], id); applyPos(buttons[id], id); });
+                      makeSlider(editBody, "Прозрачность", pb.opacity != null ? Math.round(pb.opacity * 100) : Math.round(CFG.opacity * 100), 10, 100, 5, (v) => { CFG.perButton[id].opacity = v / 100; saveCfg(); updateButtonStyle(buttons[id], id); });
+                      makeColorRow(editBody, "Цвет", pb.color || CFG.color, (hex) => { CFG.perButton[id].color = hex; saveCfg(); updateButtonStyle(buttons[id], id); });
                       const lblRow = document.createElement("div");
                       lblRow.style.cssText = "margin-bottom:10px;";
-                      const lblTitle = document.createElement("div");
-                      lblTitle.textContent = "Текст кнопки";
-                      lblTitle.style.cssText = "font-size:12px;color:#aaa;margin-bottom:4px;";
-                      lblRow.appendChild(lblTitle);
+                      const lt = document.createElement("div");
+                      lt.textContent = "Текст кнопки";
+                      lt.style.cssText = "font-size:12px;color:#aaa;margin-bottom:4px;";
+                      lblRow.appendChild(lt);
                       const lblIn = document.createElement("input");
                       lblIn.type = "text";
                       lblIn.value = pb.label || buttons[id]._defaultLabel;
                       lblIn.style.cssText = "width:100%;padding:8px;border-radius:6px;border:1px solid #444;background:#252540;color:#fff;font-size:14px;box-sizing:border-box;touch-action:manipulation;";
-                      lblIn.addEventListener("input", () => {
-                          CFG.perButton[id].label = lblIn.value || null;
-                          saveCfg(); updateButtonStyle(buttons[id], id);
-                      });
+                      lblIn.addEventListener("input", () => { CFG.perButton[id].label = lblIn.value || null; saveCfg(); updateButtonStyle(buttons[id], id); });
                       lblIn.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
                       lblRow.appendChild(lblIn);
                       editBody.appendChild(lblRow);
-
-                      makeActionBtn(editBody, "Сбросить настройки этой кнопки", "#a04040", () => {
+                      makeActionBtn(editBody, "Сбросить эту кнопку", "#a04040", () => {
                           CFG.perButton[id] = { scale: null, color: null, opacity: null, label: null };
                           if (CFG.positions) delete CFG.positions[id];
                           saveCfg(); updateButtonStyle(buttons[id], id); applyPos(buttons[id], id);
@@ -530,60 +420,40 @@ jobs:
                   }
                   refreshButtonEditor();
 
-                  // ===== PLAYER SECTION =====
+                  // PLAYER
                   const secP = makeSection("Плеер", false);
                   p.appendChild(secP.wrap);
-
-                  makeSlider(secP.body, "Размер", Math.round(CFG.player.scale * 100), 70, 160, 5, (v) => {
-                      CFG.player.scale = v / 100;
-                      saveCfg();
-                      if (window.__mp_applyCfg) window.__mp_applyCfg();
-                  });
-                  makeSlider(secP.body, "Прозрачность", Math.round(CFG.player.opacity * 100), 30, 100, 5, (v) => {
-                      CFG.player.opacity = v / 100;
-                      saveCfg();
-                      if (window.__mp_applyCfg) window.__mp_applyCfg();
-                  });
-                  makeColorRow(secP.body, "Цвет фона", CFG.player.color, (hex) => {
-                      CFG.player.color = hex;
-                      saveCfg();
-                      if (window.__mp_applyCfg) window.__mp_applyCfg();
-                  });
-                  makeColorRow(secP.body, "Акцентный цвет", CFG.player.accent, (hex) => {
-                      CFG.player.accent = hex;
-                      saveCfg();
-                      if (window.__mp_applyCfg) window.__mp_applyCfg();
-                  });
-                  makeActionBtn(secP.body, "Сбросить плеер (позиция тоже)", "#a04040", () => {
+                  makeSlider(secP.body, "Размер", Math.round(CFG.player.scale * 100), 70, 160, 5, (v) => { CFG.player.scale = v / 100; saveCfg(); if (window.__mp_applyCfg) window.__mp_applyCfg(); });
+                  makeSlider(secP.body, "Прозрачность", Math.round(CFG.player.opacity * 100), 30, 100, 5, (v) => { CFG.player.opacity = v / 100; saveCfg(); if (window.__mp_applyCfg) window.__mp_applyCfg(); });
+                  makeColorRow(secP.body, "Цвет фона", CFG.player.color, (hex) => { CFG.player.color = hex; saveCfg(); if (window.__mp_applyCfg) window.__mp_applyCfg(); });
+                  makeColorRow(secP.body, "Акцентный цвет", CFG.player.accent, (hex) => { CFG.player.accent = hex; saveCfg(); if (window.__mp_applyCfg) window.__mp_applyCfg(); });
+                  makeActionBtn(secP.body, "Сбросить плеер и позицию панели", "#a04040", () => {
                       CFG.player = Object.assign({}, DEFAULT.player);
-                      saveCfg();
-                      if (window.__mp_applyCfg) window.__mp_applyCfg();
+                      saveCfg(); if (window.__mp_applyCfg) window.__mp_applyCfg();
                   });
 
-                  // ===== GENERAL SECTION =====
+                  // GENERAL
                   const secG = makeSection("Общие", false);
                   p.appendChild(secG.wrap);
-
                   makeToggle(secG.body, "Скрывать в меню", CFG.hideInMenu, (v) => { CFG.hideInMenu = v; saveCfg(); });
                   makeToggle(secG.body, "Скрывать в диалогах", CFG.hideInMessage, (v) => { CFG.hideInMessage = v; saveCfg(); });
                   makeToggle(secG.body, "Ускорение x2", CFG.speedX2, (v) => { CFG.speedX2 = v; saveCfg(); if (window.__vc_setSpeed) window.__vc_setSpeed(v); });
+                  makeActionBtn(secG.body, editMode ? "Перемещение: ВКЛ" : "Перемещение: ВЫКЛ", editMode ? "#d0a020" : "#4060d0", () => { editMode = !editMode; refreshAll(); });
+                  makeActionBtn(secG.body, "ПОЛНЫЙ СБРОС ВСЕГО", "#a02020", () => { try { localStorage.removeItem("vc_cfg"); } catch (e) {} location.reload(); });
 
-                  makeActionBtn(secG.body, editMode ? "ПЕРЕМЕЩЕНИЕ: ВКЛ (нажми для готово)" : "Перемещение кнопок: ВЫКЛ (нажми для вкл)", editMode ? "#d0a020" : "#4060d0", () => {
-                      editMode = !editMode;
-                      refreshAll();
-                  });
-
-                  makeActionBtn(secG.body, "ПОЛНЫЙ СБРОС ВСЕГО", "#a02020", () => {
-                      try { localStorage.removeItem("vc_cfg"); } catch (e) {}
-                      location.reload();
-                  });
-
-                  makeActionBtn(secG.body, "ЗАКРЫТЬ ПАНЕЛЬ", "#303045", () => { panelOpen = false; p.style.display = "none"; });
+                  // STICKY CLOSE BAR
+                  const closeBar = document.createElement("div");
+                  closeBar.style.cssText = "position:sticky;bottom:0;padding:10px 0 16px 0;margin-top:8px;background:linear-gradient(to top, rgba(20,20,30,1) 60%, rgba(20,20,30,0));";
+                  const closeBtn = document.createElement("div");
+                  closeBtn.textContent = "✕ ЗАКРЫТЬ";
+                  closeBtn.style.cssText = "padding:12px;border-radius:8px;cursor:pointer;text-align:center;font-weight:bold;background:#a02020;color:#fff;font-size:15px;touch-action:manipulation;user-select:none;-webkit-user-select:none;";
+                  attachTap(closeBtn, () => { panelOpen = false; p.style.display = "none"; });
+                  closeBar.appendChild(closeBtn);
+                  p.appendChild(closeBar);
 
                   document.body.appendChild(p);
                   return p;
               }
-
               function togglePanel() {
                   if (!panel) panel = buildPanel();
                   panelOpen = !panelOpen;
@@ -593,14 +463,12 @@ jobs:
                   }
                   panel.style.display = panelOpen ? "block" : "none";
               }
-
               function build() {
                   if (root) return;
                   root = document.createElement("div");
                   root.id = "vc-root";
                   root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646;";
                   document.body.appendChild(root);
-
                   buttons.up = makeButton("up", "▲", 50, false);
                   buttons.down = makeButton("down", "▼", 50, false);
                   buttons.left = makeButton("left", "◀", 50, false);
@@ -609,27 +477,24 @@ jobs:
                   buttons.no = makeButton("no", "no.", 68, true);
                   buttons.mnu = makeButton("mnu", "mnu", 68, true);
                   for (const id in buttons) root.appendChild(buttons[id]);
-
                   settingsBtn = document.createElement("div");
                   settingsBtn.textContent = "⚙";
                   settingsBtn.style.cssText = "position:fixed;top:8px;right:8px;width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;z-index:2147483646;font-family:Arial;font-weight:bold;user-select:none;-webkit-user-select:none;touch-action:manipulation;";
                   attachTapFast(settingsBtn, togglePanel);
                   root.appendChild(settingsBtn);
-
                   refreshAll(); applyAllPositions(); updateVisibility();
                   setInterval(updateVisibility, 500);
               }
-
               window.addEventListener("load", () => setTimeout(build, 200));
+              let rt = null;
               window.addEventListener("resize", () => {
                   clearTimeout(rt);
                   rt = setTimeout(() => { applyAllPositions(); refreshAll(); }, 300);
               });
-              let rt = null;
           })();
           EOF
 
-      - name: Write MusicPlayer v2
+      - name: Write MusicPlayer v3 (draggable panel)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/MusicPlayer.js" <<'EOF'
@@ -639,12 +504,10 @@ jobs:
               const tracks = window.__musicTracks || [];
               log("loaded, " + tracks.length + " tracks");
               if (!tracks.length) return;
-
               let root = null, panel = null;
               let expanded = false, showList = false;
               let currentIndex = -1, override = false, isPlaying = false, userVolume = 1.0;
               let savedGameBgm = null;
-
               let origPlayBgm, origStopBgm, origFadeoutBgm;
               try {
                   origPlayBgm = AudioManager.playBgm.bind(AudioManager);
@@ -665,15 +528,10 @@ jobs:
                       origFadeoutBgm(d);
                   };
               } catch (e) { console.error("[MP] AudioManager:", e); }
-
               function getCfg() { return window.__vc_cfg || {}; }
-              function getPlayerCfg() { return (getCfg().player) || { x: null, y: null, scale: 1.0, opacity: 0.92, color: "#14141e", accent: "#5078c8" }; }
-
+              function getPlayerCfg() { return (getCfg().player) || { x: null, y: null, panelX: null, panelY: null, scale: 1.0, opacity: 0.92, color: "#14141e", accent: "#5078c8" }; }
               function applyVolume() {
-                  try {
-                      AudioManager._bgmVolume = userVolume;
-                      if (AudioManager._bgmBuffer) AudioManager._bgmBuffer.volume = userVolume;
-                  } catch (e) {}
+                  try { AudioManager._bgmVolume = userVolume; if (AudioManager._bgmBuffer) AudioManager._bgmBuffer.volume = userVolume; } catch (e) {}
               }
               function refreshFromGame() {
                   const bgm = AudioManager._currentBgm;
@@ -716,24 +574,14 @@ jobs:
                   }
                   updateUI();
               }
-
-              // Tap with drag support for the ♪ button
               function attachTapOrDrag(el, onTap, onDragEnd) {
                   let sx = 0, sy = 0, st = 0, moved = false, isDrag = false;
-                  const onStart = (e) => {
-                      const t = (e.touches && e.touches[0]) || e;
-                      sx = t.clientX; sy = t.clientY;
-                      st = Date.now(); moved = false; isDrag = false;
-                  };
+                  const onStart = (e) => { const t = (e.touches && e.touches[0]) || e; sx = t.clientX; sy = t.clientY; st = Date.now(); moved = false; isDrag = false; };
                   const onMove = (e) => {
                       const t = (e.touches && e.touches[0]) || e;
                       const dx = t.clientX - sx, dy = t.clientY - sy;
                       if (!moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) { moved = true; isDrag = true; }
-                      if (isDrag) {
-                          el.style.left = (t.clientX - 20) + "px";
-                          el.style.top = (t.clientY - 20) + "px";
-                          if (e.cancelable) e.preventDefault();
-                      }
+                      if (isDrag) { el.style.left = (t.clientX - 20) + "px"; el.style.top = (t.clientY - 20) + "px"; if (e.cancelable) e.preventDefault(); }
                   };
                   const onEnd = (e) => {
                       if (isDrag) { if (onDragEnd) onDragEnd(el.getBoundingClientRect()); }
@@ -747,32 +595,59 @@ jobs:
                   el.addEventListener("mousemove", onMove);
                   el.addEventListener("mouseup", onEnd);
               }
-
-              // Plain tap (no drag), swipe-tolerant
+              function attachDragToTitle(title, panel) {
+                  let dragging = false, sx = 0, sy = 0, startL = 0, startT = 0;
+                  const start = (e) => {
+                      const t = (e.touches && e.touches[0]) || e;
+                      const r = panel.getBoundingClientRect();
+                      sx = t.clientX; sy = t.clientY;
+                      startL = r.left; startT = r.top;
+                      dragging = true;
+                      if (e.cancelable) e.preventDefault();
+                  };
+                  const move = (e) => {
+                      if (!dragging) return;
+                      const t = (e.touches && e.touches[0]) || e;
+                      let nl = startL + (t.clientX - sx);
+                      let nt = startT + (t.clientY - sy);
+                      const pw = panel.offsetWidth, ph = panel.offsetHeight;
+                      nl = Math.max(0, Math.min(innerWidth - Math.min(60, pw), nl));
+                      nt = Math.max(0, Math.min(innerHeight - Math.min(60, ph), nt));
+                      panel.style.left = nl + "px";
+                      panel.style.top = nt + "px";
+                      if (e.cancelable) e.preventDefault();
+                  };
+                  const end = () => {
+                      if (!dragging) return;
+                      dragging = false;
+                      const cfg = getCfg();
+                      if (!cfg.player) cfg.player = {};
+                      cfg.player.panelX = parseInt(panel.style.left) || 60;
+                      cfg.player.panelY = parseInt(panel.style.top) || 60;
+                      try { localStorage.setItem("vc_cfg", JSON.stringify(cfg)); } catch (e) {}
+                  };
+                  title.style.touchAction = "none";
+                  title.style.cursor = "move";
+                  title.addEventListener("touchstart", start, { passive: false });
+                  title.addEventListener("touchmove", move, { passive: false });
+                  title.addEventListener("touchend", end, { passive: false });
+                  title.addEventListener("mousedown", start);
+                  title.addEventListener("mousemove", move);
+                  title.addEventListener("mouseup", end);
+              }
               function attachTap(el, cb) {
                   let sx = 0, sy = 0, st = 0, moved = false;
-                  el.addEventListener("touchstart", (e) => {
-                      const t = e.touches[0];
-                      sx = t.clientX; sy = t.clientY; st = Date.now(); moved = false;
-                  }, { passive: true });
-                  el.addEventListener("touchmove", (e) => {
-                      const t = e.touches[0];
-                      if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) moved = true;
-                  }, { passive: true });
-                  el.addEventListener("touchend", (e) => {
-                      if (moved || Date.now() - st > 500) return;
-                      e.preventDefault(); e.stopPropagation(); cb();
-                  }, { passive: false });
+                  el.addEventListener("touchstart", (e) => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now(); moved = false; }, { passive: true });
+                  el.addEventListener("touchmove", (e) => { const t = e.touches[0]; if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) moved = true; }, { passive: true });
+                  el.addEventListener("touchend", (e) => { if (moved || Date.now() - st > 500) return; e.preventDefault(); e.stopPropagation(); cb(); }, { passive: false });
                   el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); cb(); });
               }
-
               function applyCfg() {
                   const p = getPlayerCfg();
                   if (!root) return;
                   const baseS = 44;
                   const sz = Math.round(baseS * (p.scale || 1));
-                  root.style.width = sz + "px";
-                  root.style.height = sz + "px";
+                  root.style.width = sz + "px"; root.style.height = sz + "px";
                   root.style.fontSize = Math.round(sz * 0.55) + "px";
                   root.style.background = hexA(p.accent || "#5078c8", 0.85);
                   if (p.x != null) root.style.left = p.x + "px";
@@ -782,17 +657,17 @@ jobs:
                       panel.style.transform = "scale(" + ps + ")";
                       panel.style.transformOrigin = "top left";
                       panel.style.background = hexA(p.color || "#14141e", p.opacity || 0.92);
+                      if (p.panelX != null) panel.style.left = p.panelX + "px";
+                      if (p.panelY != null) panel.style.top = p.panelY + "px";
                   }
               }
               window.__mp_applyCfg = applyCfg;
-
               function hexA(hex, a) {
                   hex = (hex || "#000").replace('#', '');
                   if (hex.length === 3) hex = hex.split('').map(c => c+c).join('');
                   const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
                   return "rgba(" + r + "," + g + "," + b + "," + a + ")";
               }
-
               function makeBtn(label, size, bg, fg) {
                   const d = document.createElement("div");
                   d.textContent = label;
@@ -800,34 +675,28 @@ jobs:
                       "width:" + size + "px;height:" + size + "px;background:" + (bg || "rgba(40,40,60,0.9)") + ";color:" + (fg || "#fff") + ";font-size:" + Math.round(size * 0.45) + "px;";
                   return d;
               }
-
               function buildPanel() {
                   const p = document.createElement("div");
                   p.style.cssText = "position:fixed;top:60px;left:60px;padding:10px;border-radius:10px;color:#fff;font-family:Arial,sans-serif;display:none;flex-direction:column;gap:8px;z-index:2147483645;min-width:250px;max-width:300px;box-shadow:0 4px 16px rgba(0,0,0,0.6);";
                   p.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });
 
                   const title = document.createElement("div");
-                  title.style.cssText = "font-size:13px;text-align:center;color:#ccc;padding:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+                  title.style.cssText = "font-size:13px;text-align:center;color:#ccc;padding:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:none;-webkit-user-select:none;background:rgba(255,255,255,0.05);border-radius:6px;";
                   title.textContent = "—";
+                  title.title = "Перетащи меня";
                   p.appendChild(title); p._title = title;
+                  attachDragToTitle(title, p);
 
                   const btns = document.createElement("div");
                   btns.style.cssText = "display:flex;justify-content:center;gap:6px;";
-                  const prevBtn = makeBtn("⏮", 36);
-                  attachTap(prevBtn, prevTrack);
-                  btns.appendChild(prevBtn);
-                  const playBtn = makeBtn("▶", 40, "rgba(80,120,200,0.9)");
-                  attachTap(playBtn, togglePlay);
-                  btns.appendChild(playBtn); p._playBtn = playBtn;
-                  const nextBtn = makeBtn("⏭", 36);
-                  attachTap(nextBtn, nextTrack);
-                  btns.appendChild(nextBtn);
+                  const prevBtn = makeBtn("⏮", 36); attachTap(prevBtn, prevTrack); btns.appendChild(prevBtn);
+                  const playBtn = makeBtn("▶", 40, "rgba(80,120,200,0.9)"); attachTap(playBtn, togglePlay); btns.appendChild(playBtn); p._playBtn = playBtn;
+                  const nextBtn = makeBtn("⏭", 36); attachTap(nextBtn, nextTrack); btns.appendChild(nextBtn);
                   p.appendChild(btns);
 
                   const volRow = document.createElement("div");
                   volRow.style.cssText = "display:flex;align-items:center;gap:6px;";
-                  const vl = document.createElement("span");
-                  vl.textContent = "🔊"; vl.style.cssText = "font-size:14px;";
+                  const vl = document.createElement("span"); vl.textContent = "🔊"; vl.style.cssText = "font-size:14px;";
                   volRow.appendChild(vl);
                   const volIn = document.createElement("input");
                   volIn.type = "range"; volIn.min = "0"; volIn.max = "100"; volIn.value = "100";
@@ -839,15 +708,9 @@ jobs:
 
                   const ctrl = document.createElement("div");
                   ctrl.style.cssText = "display:flex;justify-content:space-between;gap:6px;";
-                  const listBtn = makeBtn("☰", 32);
-                  attachTap(listBtn, () => { showList = !showList; updateListVisibility(); });
-                  ctrl.appendChild(listBtn);
-                  const ovBtn = makeBtn("🔒", 32);
-                  attachTap(ovBtn, toggleOverride);
-                  ctrl.appendChild(ovBtn); p._overrideBtn = ovBtn;
-                  const closeBtn = makeBtn("✕", 32, "rgba(80,20,20,0.9)");
-                  attachTap(closeBtn, () => { expanded = false; updateVisibility(); });
-                  ctrl.appendChild(closeBtn);
+                  const listBtn = makeBtn("☰", 32); attachTap(listBtn, () => { showList = !showList; updateListVisibility(); }); ctrl.appendChild(listBtn);
+                  const ovBtn = makeBtn("🔒", 32); attachTap(ovBtn, toggleOverride); ctrl.appendChild(ovBtn); p._overrideBtn = ovBtn;
+                  const closeBtn = makeBtn("✕", 32, "rgba(80,20,20,0.9)"); attachTap(closeBtn, () => { expanded = false; updateVisibility(); }); ctrl.appendChild(closeBtn);
                   p.appendChild(ctrl);
 
                   const list = document.createElement("div");
@@ -861,20 +724,15 @@ jobs:
                       list.appendChild(item);
                   });
                   p.appendChild(list); p._list = list;
-
                   return p;
               }
-
-              function updateListVisibility() {
-                  if (panel && panel._list) panel._list.style.display = showList ? "block" : "none";
-              }
+              function updateListVisibility() { if (panel && panel._list) panel._list.style.display = showList ? "block" : "none"; }
               function updateUI() {
                   if (!panel) return;
                   if (panel._title) panel._title.textContent = currentIndex >= 0 ? tracks[currentIndex] : "—";
                   if (panel._playBtn) panel._playBtn.textContent = isPlaying ? "⏸" : "▶";
                   if (panel._overrideBtn) {
                       panel._overrideBtn.textContent = override ? "🔓" : "🔒";
-                      const p = getPlayerCfg();
                       panel._overrideBtn.style.background = override ? "rgba(80,180,80,0.9)" : "rgba(40,40,60,0.9)";
                   }
               }
@@ -883,7 +741,6 @@ jobs:
                   panel.style.display = expanded ? "flex" : "none";
                   root.style.display = expanded ? "none" : "flex";
               }
-
               function build() {
                   if (root) return;
                   root = document.createElement("div");
@@ -902,7 +759,6 @@ jobs:
                       }
                   );
                   document.body.appendChild(root);
-
                   panel = buildPanel();
                   document.body.appendChild(panel);
                   applyCfg();
@@ -921,13 +777,10 @@ jobs:
           p = glob.glob('www/**/plugins.js', recursive=True)[0]
           c = open(p, encoding='utf-8').read()
           m = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c)
-          if not m: print("ERROR: no array"); raise SystemExit(1)
+          if not m: raise SystemExit(1)
           prefix, arr, suff = m.group(1), m.group(2), m.group(3) or ';'
-          try: plugins = json.loads(arr)
-          except Exception as e: print("ERROR:", e); raise SystemExit(1)
-          before = len(plugins)
+          plugins = json.loads(arr)
           plugins = [pl for pl in plugins if pl.get('name') not in ('ForceCanvas','VirtualControls','MusicPlayer','MusicPlayerTracks')]
-          print("Removed:", before - len(plugins))
           for pl in plugins:
               if pl.get('name') == 'OrangeGreenworks': pl['status'] = False
               if pl.get('name') == 'VisuMZ_0_CoreEngine':
@@ -939,11 +792,8 @@ jobs:
           plugins.append({"name":"MusicPlayer","status":True,"description":"","parameters":{}})
           plugins.append({"name":"VirtualControls","status":True,"description":"","parameters":{}})
           plugins.append({"name":"ForceCanvas","status":True,"description":"","parameters":{}})
-          c_new = prefix + json.dumps(plugins, ensure_ascii=False) + ';'
-          open(p, 'w', encoding='utf-8').write(c_new)
-          m2 = re.search(r'(\$plugins\s*=\s*)(\[[\s\S]*\])(\s*;?\s*)$', c_new)
-          verify = json.loads(m2.group(2))
-          print("Verify:", len(verify), "last four:", [pl['name'] for pl in verify[-4:]])
+          open(p, 'w', encoding='utf-8').write(prefix + json.dumps(plugins, ensure_ascii=False) + ';')
+          print("Plugins OK:", len(plugins))
           PYEOF
 
       - name: Install Capacitor
@@ -964,7 +814,7 @@ jobs:
           from PIL import Image
           import os, glob
           candidates = glob.glob("www/icon/icon.png") or glob.glob("www/**/icon.png", recursive=True)
-          if not candidates: print("ERROR"); raise SystemExit(1)
+          if not candidates: raise SystemExit(1)
           src = candidates[0]; print("Using:", src)
           img = Image.open(src).convert("RGBA")
           sizes = {"mipmap-mdpi":48,"mipmap-hdpi":72,"mipmap-xhdpi":96,"mipmap-xxhdpi":144,"mipmap-xxxhdpi":192}
@@ -1001,38 +851,9 @@ jobs:
               p = paths[0]
               pm = re.search(r'package\s+([\w.]+);', open(p, encoding='utf-8').read())
               pkg = pm.group(1) if pm else 'com.badbit.chblasters'
-              java = (
-                'package ' + pkg + ';\n\n'
-                'import android.graphics.Color;\nimport android.os.Build;\nimport android.os.Bundle;\n'
-                'import android.os.Handler;\nimport android.os.Looper;\nimport android.view.WindowManager;\n'
-                'import androidx.core.view.WindowCompat;\nimport androidx.core.view.WindowInsetsCompat;\n'
-                'import androidx.core.view.WindowInsetsControllerCompat;\nimport com.getcapacitor.BridgeActivity;\n\n'
-                'public class MainActivity extends BridgeActivity {\n'
-                '    private final Handler handler = new Handler(Looper.getMainLooper());\n'
-                '    private final Runnable hideRunnable = new Runnable() { @Override public void run() { goFullscreen(); } };\n'
-                '    @Override public void onCreate(Bundle s) {\n'
-                '        super.onCreate(s);\n'
-                '        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);\n'
-                '        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {\n'
-                '            getWindow().getAttributes().layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;\n'
-                '        }\n'
-                '        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);\n'
-                '        getWindow().setStatusBarColor(Color.TRANSPARENT);\n'
-                '        getWindow().setNavigationBarColor(Color.TRANSPARENT);\n'
-                '        goFullscreen();\n'
-                '        handler.postDelayed(hideRunnable, 50); handler.postDelayed(hideRunnable, 300);\n'
-                '        handler.postDelayed(hideRunnable, 800); handler.postDelayed(hideRunnable, 1500); handler.postDelayed(hideRunnable, 3000);\n'
-                '    }\n'
-                '    @Override public void onWindowFocusChanged(boolean has) { super.onWindowFocusChanged(has); if (has) goFullscreen(); }\n'
-                '    @Override public void onDestroy() { super.onDestroy(); handler.removeCallbacks(hideRunnable); }\n'
-                '    private void goFullscreen() {\n'
-                '        WindowInsetsControllerCompat c = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());\n'
-                '        c.hide(WindowInsetsCompat.Type.systemBars());\n'
-                '        c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);\n'
-                '    }\n}\n'
-              )
+              java = 'package ' + pkg + ';\n\nimport android.graphics.Color;\nimport android.os.Build;\nimport android.os.Bundle;\nimport android.os.Handler;\nimport android.os.Looper;\nimport android.view.WindowManager;\nimport androidx.core.view.WindowCompat;\nimport androidx.core.view.WindowInsetsCompat;\nimport androidx.core.view.WindowInsetsControllerCompat;\nimport com.getcapacitor.BridgeActivity;\n\npublic class MainActivity extends BridgeActivity {\n    private final Handler handler = new Handler(Looper.getMainLooper());\n    private final Runnable hideRunnable = new Runnable() { @Override public void run() { goFullscreen(); } };\n    @Override public void onCreate(Bundle s) {\n        super.onCreate(s);\n        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);\n        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) getWindow().getAttributes().layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;\n        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);\n        getWindow().setStatusBarColor(Color.TRANSPARENT);\n        getWindow().setNavigationBarColor(Color.TRANSPARENT);\n        goFullscreen();\n        handler.postDelayed(hideRunnable, 50); handler.postDelayed(hideRunnable, 300);\n        handler.postDelayed(hideRunnable, 800); handler.postDelayed(hideRunnable, 1500); handler.postDelayed(hideRunnable, 3000);\n    }\n    @Override public void onWindowFocusChanged(boolean has) { super.onWindowFocusChanged(has); if (has) goFullscreen(); }\n    @Override public void onDestroy() { super.onDestroy(); handler.removeCallbacks(hideRunnable); }\n    private void goFullscreen() {\n        WindowInsetsControllerCompat c = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());\n        c.hide(WindowInsetsCompat.Type.systemBars());\n        c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);\n    }\n}\n'
               open(p, 'w', encoding='utf-8').write(java)
-          print("Android patches OK")
+          print("Android OK")
           PYEOF
 
       - name: Build
