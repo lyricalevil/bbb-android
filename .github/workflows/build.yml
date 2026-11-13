@@ -428,7 +428,7 @@ jobs:
           })();
           EOF
 
-      - name: Write MusicPlayer v6
+      - name: Write MusicPlayer v7
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/MusicPlayer.js" <<'EOF'
@@ -451,11 +451,11 @@ jobs:
               let myPosTimestamp = null;
               let myDuration = 0;
               let origPlayBgm, origStopBgm, origFadeoutBgm;
+
               try {
                   origPlayBgm = AudioManager.playBgm.bind(AudioManager);
                   origStopBgm = AudioManager.stopBgm.bind(AudioManager);
                   origFadeoutBgm = AudioManager.fadeOutBgm.bind(AudioManager);
-                  log("pauseBgm=" + (typeof AudioManager.pauseBgm) + " resumeBgm=" + (typeof AudioManager.resumeBgm));
                   AudioManager.playBgm = function (bgm, pos) {
                       if (override && (currentType === "builtin" || currentType === "custom")) { savedGameBgm = bgm; return; }
                       origPlayBgm(bgm, pos);
@@ -471,6 +471,7 @@ jobs:
                       origFadeoutBgm(d);
                   };
               } catch (e) { console.error("[MP] AudioManager:", e); }
+
               function openDB() {
                   return new Promise((res, rej) => {
                       const r = indexedDB.open("mp_custom_tracks", 1);
@@ -510,6 +511,7 @@ jobs:
                   try { customTracks = await dbLoad(); log("custom " + customTracks.length); }
                   catch (e) { console.error("[MP] loadCustom:", e); }
               }
+
               function getCfg() { return window.__vc_cfg || {}; }
               function getPlayerCfg() { return (getCfg().player) || { x: null, y: null, panelX: null, panelY: null, scale: 1.0, opacity: 0.92, color: "#14141e", accent: "#5078c8" }; }
               function applyVolume() {
@@ -517,20 +519,11 @@ jobs:
                   if (currentAudio) currentAudio.volume = userVolume;
               }
               function nowSec() { return Date.now() / 1000; }
-              function updateMyDuration() {
-                  try {
-                      if (currentType === "custom" && currentAudio) {
-                          const d = currentAudio.duration;
-                          if (isFinite(d) && d > 0) myDuration = d;
-                      } else if (currentType === "builtin") {
-                          const buf = AudioManager._bgmBuffer;
-                          if (buf && buf._buffer) {
-                              const d = buf._buffer.duration;
-                              if (isFinite(d) && d > 0) myDuration = d;
-                          }
-                      }
-                  } catch (e) {}
+
+              function getBuffer() {
+                  try { return AudioManager._bgmBuffer; } catch (e) { return null; }
               }
+
               function getCurrentPos() {
                   try {
                       if (currentType === "custom" && currentAudio) {
@@ -538,43 +531,86 @@ jobs:
                           return isFinite(t) ? t : 0;
                       }
                       if (currentType === "builtin") {
-                          if (myPosTimestamp !== null) return myPos + (nowSec() - myPosTimestamp);
+                          const buf = getBuffer();
+                          if (buf) {
+                              if (buf._element && typeof buf._element.currentTime === "number") {
+                                  return buf._element.currentTime;
+                              }
+                              if (buf._buffer && myPosTimestamp !== null) {
+                                  return myPos + (nowSec() - myPosTimestamp);
+                              }
+                          }
                           return myPos;
                       }
                   } catch (e) {}
                   return 0;
               }
-              function getDuration() { updateMyDuration(); return myDuration; }
+              function getDuration() {
+                  try {
+                      if (currentType === "custom" && currentAudio) {
+                          const d = currentAudio.duration;
+                          if (isFinite(d) && d > 0) return d;
+                      }
+                      if (currentType === "builtin") {
+                          const buf = getBuffer();
+                          if (buf) {
+                              if (buf._element && buf._element.duration) {
+                                  const d = buf._element.duration;
+                                  if (isFinite(d) && d > 0) return d;
+                              }
+                              if (buf._buffer && buf._buffer.duration) {
+                                  const d = buf._buffer.duration;
+                                  if (isFinite(d) && d > 0) return d;
+                              }
+                          }
+                      }
+                  } catch (e) {}
+                  return myDuration;
+              }
               function startPositionTracking(startAt) { myPos = startAt || 0; myPosTimestamp = nowSec(); }
               function pausePositionTracking() { if (myPosTimestamp !== null) { myPos += nowSec() - myPosTimestamp; myPosTimestamp = null; } }
               function resumePositionTracking() { if (myPosTimestamp === null) myPosTimestamp = nowSec(); }
               function resetPositionTracking() { myPos = 0; myPosTimestamp = null; myDuration = 0; }
+
               function seekTo(pct) {
-                  if (!isFinite(pct) || pct < 0) return;
+                  if (!isFinite(pct) || pct < 0 || pct > 1) return;
                   try {
                       if (currentType === "custom" && currentAudio) {
                           const d = currentAudio.duration;
                           if (isFinite(d) && d > 0) {
-                              const target = Math.max(0, Math.min(d - 0.05, pct * d));
-                              currentAudio.currentTime = target;
-                              myPos = target;
+                              currentAudio.currentTime = Math.max(0, Math.min(d - 0.05, pct * d));
+                              myPos = currentAudio.currentTime;
                           }
                           return;
                       }
                       if (currentType === "builtin") {
-                          const dur = getDuration();
-                          if (!dur || !isFinite(dur)) return;
+                          const buf = getBuffer();
+                          if (!buf) { log("seek: no buffer"); return; }
+                          let dur = 0;
+                          if (buf._element && buf._element.duration) dur = buf._element.duration;
+                          else if (buf._buffer && buf._buffer.duration) dur = buf._buffer.duration;
+                          if (!dur || !isFinite(dur) || dur <= 0) { log("seek: no duration"); return; }
                           const target = Math.max(0, Math.min(dur - 0.05, pct * dur));
-                          const bgm = AudioManager._currentBgm;
-                          if (origPlayBgm && bgm) {
-                              origPlayBgm({ name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan }, target);
-                              startPositionTracking(target);
-                              isPlaying = true;
-                              savedBgmForResume = { name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan };
+                          if (buf._element && typeof buf._element.currentTime === "number") {
+                              try { buf._element.currentTime = target; log("seek HTML5 -> " + target.toFixed(2)); }
+                              catch (e) { console.error("[MP] seek html5:", e); }
+                              myPos = target;
+                              myPosTimestamp = nowSec();
+                              return;
+                          }
+                          if (buf._buffer && typeof buf.play === "function") {
+                              try {
+                                  if (typeof buf.stop === "function") buf.stop();
+                                  buf.play(buf._buffer, target);
+                                  startPositionTracking(target);
+                                  log("seek WebAudio -> " + target.toFixed(2));
+                              } catch (e) { console.error("[MP] seek webaudio:", e); }
+                              return;
                           }
                       }
                   } catch (e) { console.error("[MP] seek:", e); }
               }
+
               function stopAll() {
                   try { if (origStopBgm) origStopBgm(); } catch (e) {}
                   if (currentAudio) {
@@ -617,20 +653,33 @@ jobs:
                       savedBgmForResume = { name: bgm.name, volume: 100, pitch: 100, pan: 0 };
                       isPlaying = true;
                       applyVolume();
-                      setTimeout(updateMyDuration, 200);
-                      setTimeout(updateMyDuration, 800);
                   } catch (e) { console.error("[MP] playBuiltin:", e); }
                   updateUI();
               }
               function pauseBuiltin() {
-                  const bgm = AudioManager._currentBgm;
-                  if (bgm) savedBgmForResume = { name: bgm.name, volume: bgm.volume, pitch: bgm.pitch, pan: bgm.pan };
-                  pausePositionTracking();
-                  try { if (origStopBgm) origStopBgm(); } catch (e) {}
+                  const buf = getBuffer();
+                  if (buf) {
+                      if (buf._element && !buf._element.paused) {
+                          buf._element.pause();
+                          myPos = buf._element.currentTime;
+                          myPosTimestamp = null;
+                      } else if (buf._buffer) {
+                          pausePositionTracking();
+                          try { if (typeof buf.stop === "function") buf.stop(); } catch (e) {}
+                      }
+                  }
                   isPlaying = false;
                   updateUI();
               }
               function resumeBuiltin() {
+                  const buf = getBuffer();
+                  if (buf && buf._element && myPos > 0) {
+                      try { buf._element.currentTime = myPos; buf._element.play(); } catch (e) {}
+                      myPosTimestamp = nowSec();
+                      isPlaying = true;
+                      updateUI();
+                      return;
+                  }
                   if (!savedBgmForResume || !origPlayBgm) {
                       if (currentIndex >= 0) playBuiltin(currentIndex);
                       return;
@@ -645,6 +694,7 @@ jobs:
                   } catch (e) { console.error("[MP] resumeBuiltin:", e); }
                   updateUI();
               }
+
               function playCustom(track) {
                   stopAll();
                   if (!currentAudio) {
@@ -669,25 +719,18 @@ jobs:
                   currentType = "custom"; currentCustomId = track.id; currentName = track.name; currentIndex = -1;
                   updateUI();
               }
+
               function togglePlay() {
                   if (isPlaying) {
-                      if (currentType === "custom" && currentAudio) {
-                          currentAudio.pause();
-                          isPlaying = false;
-                      } else if (currentType === "builtin") {
-                          pauseBuiltin();
-                      }
+                      if (currentType === "custom" && currentAudio) { currentAudio.pause(); isPlaying = false; }
+                      else if (currentType === "builtin") { pauseBuiltin(); }
                   } else {
                       if (currentType === "custom" && currentAudio && currentAudio.src) {
                           currentAudio.play().catch(e => console.error(e));
                           isPlaying = true;
-                      } else if (currentType === "builtin") {
-                          resumeBuiltin();
-                      } else if (currentIndex >= 0) {
-                          playBuiltin(currentIndex);
-                      } else if (customTracks.length) {
-                          playCustom(customTracks[0]);
-                      }
+                      } else if (currentType === "builtin") { resumeBuiltin(); }
+                      else if (currentIndex >= 0) { playBuiltin(currentIndex); }
+                      else if (customTracks.length) { playCustom(customTracks[0]); }
                   }
                   updateUI();
               }
@@ -717,6 +760,7 @@ jobs:
                   }
                   updateUI();
               }
+
               function attachTap(el, cb) {
                   let sx = 0, sy = 0, st = 0, moved = false;
                   el.addEventListener("touchstart", (e) => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now(); moved = false; }, { passive: true });
