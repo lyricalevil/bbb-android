@@ -428,7 +428,7 @@ jobs:
           })();
           EOF
 
-      - name: Write MusicPlayer v4 (seek + resume + custom tracks)
+      - name: Write MusicPlayer v5 (own pos tracking)
         run: |
           PLUGINS_DIR=$(dirname "$(find www -name plugins.js 2>/dev/null | head -1)")
           cat > "$PLUGINS_DIR/plugins/MusicPlayer.js" <<'EOF'
@@ -448,6 +448,11 @@ jobs:
               let progressTimer = null;
               let seeking = false;
 
+              // Позиция для builtin — считаем сами
+              let myPos = 0;           // сохранённая позиция (сек)
+              let myPosTimestamp = null; // Date.now()/1000 когда стартовал
+              let myDuration = 0;
+
               let origPlayBgm, origStopBgm, origFadeoutBgm, origPauseBgm, origResumeBgm;
               try {
                   origPlayBgm = AudioManager.playBgm.bind(AudioManager);
@@ -455,6 +460,8 @@ jobs:
                   origFadeoutBgm = AudioManager.fadeOutBgm.bind(AudioManager);
                   if (AudioManager.pauseBgm) origPauseBgm = AudioManager.pauseBgm.bind(AudioManager);
                   if (AudioManager.resumeBgm) origResumeBgm = AudioManager.resumeBgm.bind(AudioManager);
+                  log("pauseBgm=" + (!!origPauseBgm) + " resumeBgm=" + (!!origResumeBgm));
+
                   AudioManager.playBgm = function (bgm, pos) {
                       if (override && (currentType === "builtin" || currentType === "custom")) { savedGameBgm = bgm; return; }
                       origPlayBgm(bgm, pos);
@@ -508,67 +515,111 @@ jobs:
                   });
               }
               async function loadCustom() {
-                  try { customTracks = await dbLoad(); log("custom loaded: " + customTracks.length); }
+                  try { customTracks = await dbLoad(); log("custom " + customTracks.length); }
                   catch (e) { console.error("[MP] loadCustom:", e); }
               }
 
-              // ---- Config ----
               function getCfg() { return window.__vc_cfg || {}; }
               function getPlayerCfg() { return (getCfg().player) || { x: null, y: null, panelX: null, panelY: null, scale: 1.0, opacity: 0.92, color: "#14141e", accent: "#5078c8" }; }
 
-              // ---- Playback ----
               function applyVolume() {
                   try { AudioManager._bgmVolume = userVolume; if (AudioManager._bgmBuffer) AudioManager._bgmBuffer.volume = userVolume; } catch (e) {}
                   if (currentAudio) currentAudio.volume = userVolume;
               }
-              function getCurrentPos() {
+
+              // ==== POSITION TRACKING ====
+              function nowSec() { return Date.now() / 1000; }
+
+              function updateMyDuration() {
                   try {
-                      if (currentType === "custom" && currentAudio) return currentAudio.currentTime;
-                      if (currentType === "builtin") {
+                      if (currentType === "custom" && currentAudio) {
+                          const d = currentAudio.duration;
+                          if (isFinite(d) && d > 0) myDuration = d;
+                      } else if (currentType === "builtin") {
                           const buf = AudioManager._bgmBuffer;
-                          if (!buf) return 0;
-                          if (buf._element) return buf._element.currentTime || 0;
-                          if (buf._sourceNode && buf._startTime != null) {
-                              const ctx = AudioManager._context;
-                              return (ctx.currentTime - buf._startTime) * (buf._pitch || 1) + (buf._offset || 0);
+                          if (buf && buf._buffer) {
+                              const d = buf._buffer.duration;
+                              if (isFinite(d) && d > 0) myDuration = d;
                           }
                       }
                   } catch (e) {}
-                  return 0;
               }
-              function getDuration() {
+
+              function getCurrentPos() {
                   try {
-                      if (currentType === "custom" && currentAudio) return currentAudio.duration || 0;
+                      if (currentType === "custom" && currentAudio) {
+                          const t = currentAudio.currentTime;
+                          return isFinite(t) ? t : 0;
+                      }
                       if (currentType === "builtin") {
-                          const buf = AudioManager._bgmBuffer;
-                          if (!buf) return 0;
-                          if (buf._element) return buf._element.duration || 0;
-                          if (buf._buffer) return buf._buffer.duration || 0;
+                          if (myPosTimestamp !== null) {
+                              return myPos + (nowSec() - myPosTimestamp);
+                          }
+                          return myPos;
                       }
                   } catch (e) {}
                   return 0;
               }
+
+              function getDuration() {
+                  updateMyDuration();
+                  return myDuration;
+              }
+
+              function startPositionTracking(startAt) {
+                  myPos = startAt || 0;
+                  myPosTimestamp = nowSec();
+              }
+              function pausePositionTracking() {
+                  if (myPosTimestamp !== null) {
+                      myPos += nowSec() - myPosTimestamp;
+                      myPosTimestamp = null;
+                  }
+              }
+              function resumePositionTracking() {
+                  if (myPosTimestamp === null) {
+                      myPosTimestamp = nowSec();
+                  }
+              }
+              function resetPositionTracking() {
+                  myPos = 0;
+                  myPosTimestamp = null;
+                  myDuration = 0;
+              }
+
               function seekTo(pct) {
                   try {
                       if (currentType === "custom" && currentAudio) {
                           const d = currentAudio.duration;
-                          if (d && isFinite(d)) currentAudio.currentTime = pct * d;
+                          if (isFinite(d) && d > 0) {
+                              const target = Math.max(0, Math.min(d - 0.05, pct * d));
+                              currentAudio.currentTime = target;
+                              myPos = target;
+                          }
                           return;
                       }
                       if (currentType === "builtin") {
-                          const buf = AudioManager._bgmBuffer;
-                          if (!buf) return;
                           const dur = getDuration();
-                          if (!dur || !isFinite(dur)) return;
-                          const target = pct * dur;
-                          if (typeof buf.seek === "function") {
-                              buf.seek();
-                              buf.play(buf._buffer, target);
-                          } else if (buf._element) {
-                              buf._element.currentTime = target;
+                          if (!dur) return;
+                          const target = Math.max(0, Math.min(dur - 0.05, pct * dur));
+                          const bgm = AudioManager._currentBgm;
+                          if (origPlayBgm && bgm) {
+                              origPlayBgm(bgm, target);
+                              startPositionTracking(target);
+                              isPlaying = true;
                           }
                       }
                   } catch (e) { console.error("[MP] seek:", e); }
+              }
+
+              // ==== PLAYBACK ====
+              function stopAll() {
+                  try { if (origStopBgm) origStopBgm(); } catch (e) {}
+                  if (currentAudio) {
+                      try { currentAudio.pause(); if (currentAudio.src) URL.revokeObjectURL(currentAudio.src); } catch (e) {}
+                      currentAudio.src = "";
+                  }
+                  resetPositionTracking();
               }
 
               function refreshFromGame() {
@@ -576,20 +627,17 @@ jobs:
                   const bgm = AudioManager._currentBgm;
                   if (bgm && bgm.name) {
                       const idx = builtinTracks.indexOf(bgm.name);
-                      if (idx >= 0) { currentType = "builtin"; currentIndex = idx; currentName = bgm.name; currentCustomId = null; }
+                      if (idx >= 0) {
+                          if (currentType !== "builtin" || currentIndex !== idx) {
+                              currentType = "builtin"; currentIndex = idx; currentName = bgm.name; currentCustomId = null;
+                              startPositionTracking(0);
+                          }
+                      }
                       isPlaying = !!AudioManager._bgmBuffer;
                   } else {
                       isPlaying = false;
                   }
                   updateUI();
-              }
-
-              function stopAll() {
-                  try { if (origStopBgm) origStopBgm(); } catch (e) {}
-                  if (currentAudio) {
-                      try { currentAudio.pause(); if (currentAudio.src) URL.revokeObjectURL(currentAudio.src); } catch (e) {}
-                      currentAudio.src = "";
-                  }
               }
 
               function playBuiltin(index) {
@@ -603,50 +651,70 @@ jobs:
                       AudioManager._bgmVolume = userVolume;
                       const bgm = { name: builtinTracks[index], volume: 100, pitch: 100, pan: 0 };
                       if (origPlayBgm) origPlayBgm(bgm);
+                      startPositionTracking(0);
                       isPlaying = true;
                       applyVolume();
+                      setTimeout(updateMyDuration, 200);
+                      setTimeout(updateMyDuration, 800);
                   } catch (e) { console.error("[MP] playBuiltin:", e); }
                   updateUI();
               }
+
               function playCustom(track) {
                   stopAll();
                   if (!currentAudio) {
                       currentAudio = new Audio();
                       currentAudio.addEventListener("ended", () => { isPlaying = false; updateUI(); });
-                      currentAudio.addEventListener("loadedmetadata", () => updateUI());
+                      currentAudio.addEventListener("loadedmetadata", () => {
+                          const d = currentAudio.duration;
+                          if (isFinite(d) && d > 0) myDuration = d;
+                          updateUI();
+                      });
+                      currentAudio.addEventListener("timeupdate", () => { /* handled by timer */ });
                   }
                   const url = URL.createObjectURL(track.blob);
                   currentAudio.src = url;
                   currentAudio.volume = userVolume;
-                  currentAudio.play().catch(e => console.error("[MP] audio play:", e));
+                  myDuration = 0;
+                  myPos = 0;
+                  currentAudio.play().then(() => {
+                      isPlaying = true;
+                      if (isFinite(currentAudio.duration) && currentAudio.duration > 0) myDuration = currentAudio.duration;
+                      updateUI();
+                  }).catch(e => { console.error("[MP] custom play:", e); isPlaying = false; updateUI(); });
                   currentType = "custom"; currentCustomId = track.id; currentName = track.name; currentIndex = -1;
-                  isPlaying = true;
                   updateUI();
               }
 
               function togglePlay() {
                   if (isPlaying) {
-                      if (currentType === "custom" && currentAudio) currentAudio.pause();
-                      else if (currentType === "builtin" && origPauseBgm) origPauseBgm();
-                      else if (currentType === "builtin") { try { origStopBgm(); } catch (e) {} }
+                      // PAUSE
+                      if (currentType === "custom" && currentAudio) {
+                          currentAudio.pause();
+                      } else if (currentType === "builtin") {
+                          if (origPauseBgm) origPauseBgm();
+                          pausePositionTracking();
+                      }
                       isPlaying = false;
                   } else {
+                      // RESUME
                       if (currentType === "custom" && currentAudio && currentAudio.src) {
                           currentAudio.play().catch(e => console.error(e));
-                      } else if (currentType === "builtin") {
-                          try {
-                              if (AudioManager._bgmBuffer && !AudioManager.isBgmPlaying() && origResumeBgm) {
-                                  origResumeBgm();
-                              } else if (currentIndex >= 0) {
-                                  playBuiltin(currentIndex);
-                              }
-                          } catch (e) { if (currentIndex >= 0) playBuiltin(currentIndex); }
+                          isPlaying = true;
+                      } else if (currentType === "builtin" && origResumeBgm) {
+                          origResumeBgm();
+                          resumePositionTracking();
+                          isPlaying = true;
+                      } else if (currentType === "builtin" && currentIndex >= 0) {
+                          playBuiltin(currentIndex);
+                          isPlaying = true;
                       } else if (currentIndex >= 0) {
                           playBuiltin(currentIndex);
+                          isPlaying = true;
                       } else if (customTracks.length) {
                           playCustom(customTracks[0]);
+                          isPlaying = true;
                       }
-                      isPlaying = true;
                   }
                   updateUI();
               }
@@ -668,14 +736,14 @@ jobs:
               function toggleOverride() {
                   override = !override;
                   if (!override) {
-                      if (savedGameBgm && origPlayBgm) { origPlayBgm(savedGameBgm); savedGameBgm = null; }
+                      if (savedGameBgm && origPlayBgm) { origPlayBgm(savedGameBgm); savedGameBgm = null; startPositionTracking(0); }
                       currentType = null; currentIndex = -1; currentCustomId = null; currentName = "—";
+                      resetPositionTracking();
                       setTimeout(refreshFromGame, 100);
                   }
                   updateUI();
               }
 
-              // ---- Taps ----
               function attachTap(el, cb) {
                   let sx = 0, sy = 0, st = 0, moved = false;
                   el.addEventListener("touchstart", (e) => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now(); moved = false; }, { passive: true });
@@ -740,15 +808,37 @@ jobs:
                   title.addEventListener("mousemove", move);
                   title.addEventListener("mouseup", end);
               }
+
               function attachSeek(bar, fill, thumb) {
                   const getPct = (e) => {
                       const t = (e.touches && e.touches[0]) || e;
                       const r = bar.getBoundingClientRect();
                       return Math.max(0, Math.min(1, (t.clientX - r.left) / r.width));
                   };
-                  const start = (e) => { seeking = true; const p = getPct(e); fill.style.width = (p * 100) + "%"; if (thumb) thumb.style.left = (p * 100) + "%"; if (e.cancelable) e.preventDefault(); };
-                  const move = (e) => { if (!seeking) return; const p = getPct(e); fill.style.width = (p * 100) + "%"; if (thumb) thumb.style.left = (p * 100) + "%"; if (e.cancelable) e.preventDefault(); };
-                  const end = (e) => { if (!seeking) return; seeking = false; const p = getPct(e); seekTo(p); };
+                  const start = (e) => {
+                      seeking = true;
+                      const p = getPct(e);
+                      fill.style.width = (p * 100) + "%";
+                      if (thumb) thumb.style.left = (p * 100) + "%";
+                      if (e.cancelable) e.preventDefault();
+                  };
+                  const move = (e) => {
+                      if (!seeking) return;
+                      const p = getPct(e);
+                      fill.style.width = (p * 100) + "%";
+                      if (thumb) thumb.style.left = (p * 100) + "%";
+                      if (e.cancelable) e.preventDefault();
+                  };
+                  const end = (e) => {
+                      if (!seeking) return;
+                      seeking = false;
+                      const p = getPct(e);
+                      seekTo(p);
+                      if (panel) {
+                          panel._fill.style.width = (p * 100) + "%";
+                          if (panel._thumb) panel._thumb.style.left = (p * 100) + "%";
+                      }
+                  };
                   bar.addEventListener("touchstart", start, { passive: false });
                   bar.addEventListener("touchmove", move, { passive: false });
                   bar.addEventListener("touchend", end, { passive: false });
@@ -756,11 +846,11 @@ jobs:
                   bar.addEventListener("mousemove", move);
                   bar.addEventListener("mouseup", end);
               }
+
               function applyCfg() {
                   const p = getPlayerCfg();
                   if (!root) return;
-                  const baseS = 44;
-                  const sz = Math.round(baseS * (p.scale || 1));
+                  const sz = Math.round(44 * (p.scale || 1));
                   root.style.width = sz + "px"; root.style.height = sz + "px";
                   root.style.fontSize = Math.round(sz * 0.55) + "px";
                   root.style.background = hexA(p.accent || "#5078c8", 0.85);
@@ -783,7 +873,7 @@ jobs:
                   return "rgba(" + r + "," + g + "," + b + "," + a + ")";
               }
               function fmtTime(s) {
-                  if (!s || !isFinite(s)) return "0:00";
+                  if (!s || !isFinite(s) || s < 0) return "0:00";
                   const m = Math.floor(s / 60);
                   const ss = Math.floor(s % 60);
                   return m + ":" + (ss < 10 ? "0" : "") + ss;
@@ -800,12 +890,10 @@ jobs:
                   if (!panel || !panel._list) return;
                   const list = panel._list;
                   list.innerHTML = "";
-
-                  const hBuiltin = document.createElement("div");
-                  hBuiltin.textContent = "Встроенные (" + builtinTracks.length + ")";
-                  hBuiltin.style.cssText = "font-size:11px;color:#888;padding:6px 4px 2px 4px;text-transform:uppercase;letter-spacing:0.5px;";
-                  list.appendChild(hBuiltin);
-
+                  const hB = document.createElement("div");
+                  hB.textContent = "Встроенные (" + builtinTracks.length + ")";
+                  hB.style.cssText = "font-size:11px;color:#888;padding:6px 4px 2px 4px;text-transform:uppercase;letter-spacing:0.5px;";
+                  list.appendChild(hB);
                   builtinTracks.forEach((name, i) => {
                       const item = document.createElement("div");
                       item.textContent = name;
@@ -813,19 +901,17 @@ jobs:
                       attachTap(item, () => { playBuiltin(i); showList = false; updateListVisibility(); });
                       list.appendChild(item);
                   });
-
-                  const hCustom = document.createElement("div");
-                  hCustom.style.cssText = "display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#888;padding:10px 4px 2px 4px;text-transform:uppercase;letter-spacing:0.5px;";
+                  const hC = document.createElement("div");
+                  hC.style.cssText = "display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#888;padding:10px 4px 2px 4px;text-transform:uppercase;letter-spacing:0.5px;";
                   const hcT = document.createElement("span");
                   hcT.textContent = "Свои (" + customTracks.length + ")";
-                  hCustom.appendChild(hcT);
+                  hC.appendChild(hcT);
                   const addBtn = document.createElement("div");
                   addBtn.textContent = "➕";
                   addBtn.style.cssText = "padding:2px 8px;border-radius:4px;background:#4060d0;color:#fff;font-size:14px;cursor:pointer;touch-action:manipulation;user-select:none;";
                   attachTap(addBtn, addCustomFiles);
-                  hCustom.appendChild(addBtn);
-                  list.appendChild(hCustom);
-
+                  hC.appendChild(addBtn);
+                  list.appendChild(hC);
                   customTracks.forEach(t => {
                       const row = document.createElement("div");
                       row.style.cssText = "display:flex;align-items:center;gap:4px;padding:8px;font-size:12px;border-radius:4px;color:" + (currentType === "custom" && currentCustomId === t.id ? "#5078c8" : "#ddd") + ";background:" + (currentType === "custom" && currentCustomId === t.id ? "rgba(80,120,200,0.15)" : "transparent") + ";";
@@ -844,7 +930,6 @@ jobs:
                       row.appendChild(delBtn);
                       list.appendChild(row);
                   });
-
                   if (customTracks.length === 0) {
                       const empty = document.createElement("div");
                       empty.textContent = "Нажми ➕ чтобы добавить свои аудиофайлы";
@@ -865,7 +950,7 @@ jobs:
                           const files = Array.from(fileInput.files || []);
                           if (!files.length) return;
                           for (const f of files) {
-                              try { await dbAdd(f); log("added: " + f.name); }
+                              try { await dbAdd(f); log("added " + f.name); }
                               catch (e) { console.error("[MP] add:", e); alert("Ошибка: " + f.name); }
                           }
                           await loadCustom();
@@ -889,20 +974,19 @@ jobs:
                   p.appendChild(title); p._title = title;
                   attachDragToTitle(title, p);
 
-                  // Seek bar
                   const seekRow = document.createElement("div");
                   seekRow.style.cssText = "padding:2px 0;";
                   const bar = document.createElement("div");
-                  bar.style.cssText = "position:relative;height:8px;background:rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;touch-action:none;margin:4px 0;";
+                  bar.style.cssText = "position:relative;height:10px;background:rgba(255,255,255,0.2);border-radius:5px;cursor:pointer;touch-action:none;margin:4px 0;";
                   const fill = document.createElement("div");
-                  fill.style.cssText = "height:100%;width:0%;background:#5078c8;border-radius:4px;pointer-events:none;";
+                  fill.style.cssText = "height:100%;width:0%;background:#5078c8;border-radius:5px;pointer-events:none;transition:width 0.05s linear;";
                   bar.appendChild(fill);
                   const thumb = document.createElement("div");
-                  thumb.style.cssText = "position:absolute;top:50%;left:0%;width:14px;height:14px;background:#fff;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.5);";
+                  thumb.style.cssText = "position:absolute;top:50%;left:0%;width:16px;height:16px;background:#fff;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.5);transition:left 0.05s linear;";
                   bar.appendChild(thumb);
                   seekRow.appendChild(bar);
                   const timeRow = document.createElement("div");
-                  timeRow.style.cssText = "display:flex;justify-content:space-between;font-size:11px;color:#aaa;";
+                  timeRow.style.cssText = "display:flex;justify-content:space-between;font-size:11px;color:#aaa;font-family:monospace;";
                   const timeCur = document.createElement("span"); timeCur.textContent = "0:00";
                   const timeTot = document.createElement("span"); timeTot.textContent = "0:00";
                   timeRow.appendChild(timeCur); timeRow.appendChild(timeTot);
@@ -956,29 +1040,32 @@ jobs:
                   if (showList) rebuildList();
               }
               function updateProgress() {
-                  if (!panel || !panel._fill || seeking) return;
+                  if (!panel || !panel._fill) return;
+                  if (seeking) return;
                   const pos = getCurrentPos();
                   const dur = getDuration();
+                  let pct = 0;
                   if (dur > 0 && isFinite(dur)) {
-                      const pct = Math.min(100, (pos / dur) * 100);
-                      panel._fill.style.width = pct + "%";
-                      if (panel._thumb) panel._thumb.style.left = pct + "%";
-                      if (panel._timeCur) panel._timeCur.textContent = fmtTime(pos);
-                      if (panel._timeTot) panel._timeTot.textContent = fmtTime(dur);
-                  } else {
-                      if (panel._fill) panel._fill.style.width = "0%";
-                      if (panel._thumb) panel._thumb.style.left = "0%";
-                      if (panel._timeCur) panel._timeCur.textContent = "0:00";
-                      if (panel._timeTot) panel._timeTot.textContent = "0:00";
+                      pct = Math.min(100, Math.max(0, (pos / dur) * 100));
                   }
+                  panel._fill.style.width = pct + "%";
+                  if (panel._thumb) panel._thumb.style.left = pct + "%";
+                  if (panel._timeCur) panel._timeCur.textContent = fmtTime(pos);
+                  if (panel._timeTot) panel._timeTot.textContent = fmtTime(dur);
               }
               function updateVisibility() {
                   if (!panel || !root) return;
                   panel.style.display = expanded ? "flex" : "none";
                   root.style.display = expanded ? "none" : "flex";
-                  if (expanded) { if (progressTimer) clearInterval(progressTimer); progressTimer = setInterval(updateProgress, 250); }
-                  else { if (progressTimer) { clearInterval(progressTimer); progressTimer = null; } }
+                  if (expanded) {
+                      if (currentType === null) refreshFromGame();
+                      if (progressTimer) clearInterval(progressTimer);
+                      progressTimer = setInterval(updateProgress, 250);
+                  } else {
+                      if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+                  }
               }
+
               function build() {
                   if (root) return;
                   root = document.createElement("div");
